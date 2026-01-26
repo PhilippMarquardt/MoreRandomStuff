@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "perspective-service"
+version = "0.1.0"
+description = "Polars-based perspective processing engine for financial position data"
+requires-python = ">=3.10"
+dependencies = [
+    "polars>=0.20.0",
+    "arrow-odbc>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["perspective_service"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
