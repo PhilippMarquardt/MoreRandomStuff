@@ -91,10 +91,13 @@ class PerspectiveEngine:
             required_tables,
             position_weights + lookthrough_weights,
             self.db_loader
-        )   
+        )
 
         if positions_lf.collect_schema().names() == []:
             return {"perspective_configurations": {}}
+
+        # Get original containers before any filtering (for empty container handling)
+        original_containers = positions_lf.select("container").unique().collect().to_series().to_list()
 
         # Step 6: Precompute nested criteria values
         precomputed_values = self._precompute_nested_criteria(
@@ -133,7 +136,8 @@ class PerspectiveEngine:
             verbose,
             flatten_response,
             weight_labels_map,
-            perspective_configs
+            perspective_configs,
+            original_containers
         )
 
     def _determine_required_tables(self,

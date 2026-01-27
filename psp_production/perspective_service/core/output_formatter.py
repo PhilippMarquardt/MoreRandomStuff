@@ -19,7 +19,8 @@ class OutputFormatter:
                       verbose: bool,
                       flatten_response: bool = False,
                       weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
-                      perspective_configs: Optional[Dict] = None) -> Dict:
+                      perspective_configs: Optional[Dict] = None,
+                      original_containers: Optional[List[str]] = None) -> Dict:
         """Format processed dataframes into structured output.
 
         Args:
@@ -27,6 +28,7 @@ class OutputFormatter:
                 {container_name: (pos_weight_labels, lt_weight_labels)}
             perspective_configs: {config_name: {perspective_id: [modifier_names]}}
                 Used to determine which perspectives have rescaling enabled.
+            original_containers: List of container names from input (for empty container handling)
         """
         if not metadata_map:
             return {"perspective_configurations": {}}
@@ -76,6 +78,26 @@ class OutputFormatter:
             weight_labels_map,
             perspective_configs
         )
+
+        # =============================================================================
+        # LEGACY COMPATIBILITY: Remove this block when caller is adjusted
+        # =============================================================================
+        # When all positions are filtered out, legacy expects:
+        # - Container key still present in output
+        # - "positions": None (explicitly null, not missing)
+        # - "scale_factors": already set to 1.0 by _add_scale_factors (no impact since no positions)
+        #
+        # TODO: Remove this block once callers are updated to handle missing containers.
+        # =============================================================================
+        if original_containers:
+            for config_name, perspective_map in results.items():
+                for perspective_id in perspective_map:
+                    for container in original_containers:
+                        container_data = results[config_name][perspective_id].get(container, {})
+                        if "positions" not in container_data:
+                            if container not in results[config_name][perspective_id]:
+                                results[config_name][perspective_id][container] = {}
+                            results[config_name][perspective_id][container]["positions"] = None
 
         # Flatten response if requested
         if flatten_response:

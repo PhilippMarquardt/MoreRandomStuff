@@ -414,7 +414,8 @@ def calculate_expected(scenario: ModifierScenario) -> Dict:
     )
 
     # --- Calculate SF ---
-    # When all positions are removed, SF defaults to 1.0 (nothing to scale)
+    # When all positions are removed, SF = 1.0 (no rescaling applied)
+    # The value is irrelevant since there are no positions to multiply
     if kept_mass == 0:
         expected_sf = 1.0
     elif scenario.scale_holdings:
@@ -461,7 +462,7 @@ def verify_scenario(
         print("  [FAIL] Missing container output")
         return False
 
-    positions = container_data.get("positions", {})
+    positions = container_data.get("positions") or {}  # Handle positions: None
     scale_factors = container_data.get("scale_factors", {})
 
     # Check scale factor
@@ -640,12 +641,107 @@ def run_all_tests() -> bool:
     return passed == len(results)
 
 
+def test_all_positions_removed() -> bool:
+    """
+    LEGACY COMPATIBILITY TEST - Remove when caller is adjusted.
+
+    Test that when ALL positions are removed, the container still appears with:
+    - positions: None (not missing, explicitly None)
+    - scale_factors: {weight: 1.0} (default, value is irrelevant since nothing to multiply)
+
+    This matches legacy behavior. Once callers are updated to handle missing
+    containers, this test and the corresponding code in output_formatter.py
+    should be removed.
+    """
+    print("\n" + "=" * 90)
+    print("TEST: all_positions_removed (legacy: positions=None)")
+    print("=" * 90)
+
+    # Create a rule that filters out ALL positions
+    engine = PerspectiveEngine()
+    engine.config.default_modifiers = []
+
+    # Custom perspective rule that matches NOTHING (instrument_id = -999 doesn't exist)
+    engine.config.perspectives[PERSPECTIVE_ID] = [
+        Rule(
+            name="filter_all",
+            apply_to="both",
+            criteria={"column": "instrument_id", "operator_type": "==", "value": -999},
+            is_scaling_rule=False
+        )
+    ]
+
+    input_json = create_test_input_json()
+
+    try:
+        output = engine.process(
+            input_json=input_json,
+            perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
+            position_weights=["initial_weight"],
+            lookthrough_weights=["weight"],
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"  [ERROR] PSP failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # Get container data
+    container_data = (
+        output
+        .get("perspective_configurations", {})
+        .get("test_config", {})
+        .get(PERSPECTIVE_ID, {})
+        .get(CONTAINER, {})
+    )
+
+    # Check 1: Container must be present
+    if not container_data:
+        print("  [FAIL] Container missing from output")
+        return False
+    print("  [OK] Container present in output")
+
+    # Check 2: positions key must exist and be None
+    if "positions" not in container_data:
+        print("  [FAIL] 'positions' key missing from container")
+        return False
+    if container_data["positions"] is not None:
+        print(f"  [FAIL] 'positions' should be None, got: {container_data['positions']}")
+        return False
+    print("  [OK] positions = None")
+
+    # Check 3: scale_factors must exist with value 0.0
+    scale_factors = container_data.get("scale_factors", {})
+    if not scale_factors:
+        print("  [FAIL] 'scale_factors' missing from container")
+        return False
+
+    sf_value = scale_factors.get("initial_weight", None)
+    if sf_value is None:
+        print("  [FAIL] 'initial_weight' missing from scale_factors")
+        return False
+
+    # SF = 1.0 when all positions removed (value is irrelevant since nothing to multiply)
+    if sf_value != 1.0:
+        print(f"  [FAIL] scale_factor = {sf_value}, expected 1.0")
+        return False
+    print(f"  [OK] scale_factors = 1.0")
+
+    print("\n  [PASS] all_positions_removed")
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 90)
     print("COMPREHENSIVE MODIFIER & RULE COMBINATIONS TEST")
     print("=" * 90)
 
     success = run_all_tests()
+
+    # Run dedicated "all positions removed" test
+    success = test_all_positions_removed() and success
+
     if success:
         print("\nALL TESTS PASSED")
     else:
