@@ -43,7 +43,7 @@ class PerspectiveProcessor:
             perspective_ids = sorted([int(k) for k in perspective_map.keys()])
 
             for perspective_id in perspective_ids:
-                # Create unique column name for this perspective
+                # Create unique factor column name for this perspective
                 column_name = f"f_{config_name}_{perspective_id}"
                 metadata_map[config_name][perspective_id] = column_name
 
@@ -80,7 +80,7 @@ class PerspectiveProcessor:
         if has_lookthroughs:
             lookthroughs_lf = lookthroughs_lf.with_columns(factor_expressions_lt)
 
-            # Synchronize lookthroughs with parent positions
+            # Synchronize lookthroughs with parent positions -> Remove children if parent dead
             all_columns = [c for m in metadata_map.values() for c in m.values()]
             lookthroughs_lf = self._synchronize_lookthroughs(
                 lookthroughs_lf, positions_lf, all_columns
@@ -109,11 +109,10 @@ class PerspectiveProcessor:
         factor_cols = [c for pmap in metadata_map.values() for c in pmap.values()]
 
         # Resolve valid weight labels once (global + per-container labels)
-        # DETERMINISTIC: keep original order, then append extras from weight_labels_map
         pos_schema = set(positions_lf.collect_schema().names())
 
         pos_weights_set = set(position_weights)
-        ordered_pos_weights = list(position_weights)  # Preserve original order
+        ordered_pos_weights = list(position_weights)  
 
         lt_weights_set = set(lookthrough_weights)
         ordered_lt_weights = list(lookthrough_weights)
@@ -129,7 +128,7 @@ class PerspectiveProcessor:
                         ordered_lt_weights.append(w)
                         lt_weights_set.add(w)
 
-        # Filter by schema membership (keeping deterministic order)
+        # Filter by schema membership 
         pos_weights_valid = [w for w in ordered_pos_weights if w in pos_schema]
 
         # Build expressions for positions
@@ -288,7 +287,7 @@ class PerspectiveProcessor:
                                   factor_columns: List[str]) -> pl.LazyFrame:
         """Synchronize lookthrough factors with parent position factors."""
         # Get parent factors - aggregate by (instrument_id, sub_portfolio_id)
-        # Original behavior: if ANY parent with same (instrument_id, sub_portfolio_id) fails,
+        # Legacy behavior: if ANY parent with same (instrument_id, sub_portfolio_id) fails,
         # the lookthrough should be removed. So we check if ANY factor is NULL.
         parent_factors = positions_lf.group_by(["instrument_id", "sub_portfolio_id"]).agg([
             pl.when(pl.col(col).is_null().any())
@@ -352,7 +351,6 @@ class PerspectiveProcessor:
         - Per (container, parent_instrument_id, record_type), per fcol, per weight:
             denom_w = sum_children(w * fcol) over matching parents only (and kept rows only)
             factor_w = fcol / denom_w (only if row kept AND parent matches AND denom_w != 0)
-        - Uses group_by + join (no window sums) and builds parent match flags once.
         """
 
         # -------------------------
@@ -371,7 +369,7 @@ class PerspectiveProcessor:
             return positions_lf, lookthroughs_lf
 
         # -------------------------
-        # 2) Resolve weight labels (ONE collect_schema at start)
+        # 2) Resolve weight labels 
         # -------------------------
         pos_schema = set(positions_lf.collect_schema().names())
         lt_schema = (

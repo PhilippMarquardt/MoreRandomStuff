@@ -2,10 +2,10 @@
 High-level API for the Perspective Service.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from .core.engine import PerspectiveEngine
-from .config import DatabaseConfig, load_config
+from .config import DatabaseConfig
 
 
 class PerspectiveService:
@@ -13,23 +13,16 @@ class PerspectiveService:
     Main API for perspective processing.
 
     Usage:
-        # With connection string
         service = PerspectiveService(connection_string="Driver={...};Server=...;...")
-        result = service.process(input_json, perspective_configs, position_weights)
 
-        # With DatabaseConfig
-        config = DatabaseConfig(server="localhost", database="mydb")
-        service = PerspectiveService(config=config)
+        result = service.process(request_json)
 
-        # Without database (for testing with custom perspectives only)
-        service = PerspectiveService()
     """
 
     def __init__(
         self,
         connection_string: Optional[str] = None,
-        config: Optional[DatabaseConfig] = None,
-        system_version_timestamp: Optional[str] = None
+        config: Optional[DatabaseConfig] = None
     ):
         """
         Initialize the PerspectiveService.
@@ -37,7 +30,6 @@ class PerspectiveService:
         Args:
             connection_string: ODBC connection string for database access
             config: DatabaseConfig object (alternative to connection_string)
-            system_version_timestamp: Optional timestamp for temporal DB queries
         """
         if connection_string:
             self._connection_string = connection_string
@@ -46,68 +38,64 @@ class PerspectiveService:
         else:
             self._connection_string = None
 
-        self._system_version_timestamp = system_version_timestamp
-
     def process(
         self,
-        input_json: Dict,
-        perspective_configs: Dict[str, Dict[str, List[str]]],
-        position_weights: List[str],
-        lookthrough_weights: Optional[List[str]] = None,
+        request: Dict,
         verbose: bool = False,
         flatten_response: bool = False
     ) -> Dict:
         """
-        Process input data through perspective rules.
+        Process request through perspective rules.
+
+        All parameters are extracted from the request JSON:
+        - perspective_configurations: {config_name: {perspective_id: [modifier_names]}}
+        - position_weight_labels: Weight column names for positions (default: ['weight'])
+        - lookthrough_weight_labels: Weight column names for lookthroughs (default: position_weight_labels)
+        - system_version_timestamp: Optional timestamp for temporal DB queries
 
         Args:
-            input_json: Input data containing positions and lookthroughs
-            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
-            position_weights: Weight column names for positions
-            lookthrough_weights: Weight column names for lookthroughs (defaults to position_weights)
+            request: Full request JSON containing positions, configs, and parameters
             verbose: Whether to include extra metadata in output
             flatten_response: Whether to flatten output to columnar format
 
         Returns:
             Dict with perspective_configurations containing filtered/scaled weights
         """
-        if lookthrough_weights is None:
-            lookthrough_weights = position_weights
+        # Extract parameters from request JSON
+        perspective_configs = request.get('perspective_configurations', {})
+        position_weights = request.get('position_weight_labels', ['weight'])
+        lookthrough_weights = request.get('lookthrough_weight_labels', position_weights)
+        system_version_timestamp = request.get('system_version_timestamp')
 
         engine = PerspectiveEngine(
             self._connection_string,
-            self._system_version_timestamp
+            system_version_timestamp
         )
         return engine.process(
-            input_json,
-            perspective_configs,
-            position_weights,
-            lookthrough_weights,
-            verbose,
-            flatten_response
+            input_json=request,
+            perspective_configs=perspective_configs,
+            position_weights=position_weights,
+            lookthrough_weights=lookthrough_weights,
+            verbose=verbose,
+            flatten_response=flatten_response
         )
 
-    def get_requirements(
-        self,
-        input_json: Dict,
-        perspective_configs: Dict[str, Dict[str, List[str]]]
-    ) -> Dict[str, List[str]]:
+    def get_requirements(self, request: Dict) -> Dict[str, list]:
         """
-        Get required database tables and columns for the given perspectives.
-
-        Use this to understand what reference data will be fetched from the database.
+        Get required database tables and columns for the given request.
 
         Args:
-            input_json: Input data (needed for custom_perspective_rules)
-            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
+            request: Request JSON (needs perspective_configurations and optionally custom_perspective_rules)
 
         Returns:
             Dict of {table_name: [column_names]} that will be queried
         """
+        perspective_configs = request.get('perspective_configurations', {})
+        system_version_timestamp = request.get('system_version_timestamp')
+
         engine = PerspectiveEngine(
             self._connection_string,
-            self._system_version_timestamp
+            system_version_timestamp
         )
-        # Parse custom perspectives first (they may have required_columns)
-        engine._parse_custom_perspectives(input_json)
+        engine._parse_custom_perspectives(request)
         return engine._determine_required_tables(perspective_configs)

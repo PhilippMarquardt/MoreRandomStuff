@@ -5,7 +5,7 @@ Modifier dataclass for rule modifiers.
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 
-
+# TODO: Should use enum
 @dataclass
 class Modifier:
     """Represents a rule modifier that can adjust rule behavior."""

@@ -65,7 +65,7 @@ class OutputFormatter:
                 weight_labels_map
             )
 
-        # Scale factors are ALWAYS computed (not just verbose mode)
+        # Scale factors are ALWAYS computed
         OutputFormatter._add_scale_factors(
             positions_df,
             lookthroughs_df,
@@ -77,7 +77,7 @@ class OutputFormatter:
             perspective_configs
         )
 
-        # Flatten response if requested (converts row-based to columnar format)
+        # Flatten response if requested
         if flatten_response:
             OutputFormatter._flatten_results(results)
 
@@ -112,9 +112,8 @@ class OutputFormatter:
             base_cols.append("record_type")
 
         # IMPORTANT: Build candidate_weights from SAME universe as Processor
-        # Keep DETERMINISTIC ordering: original weights first, then extras from weight_labels_map
         candidate_weights_set = set(weights)
-        ordered_candidate_weights = list(weights)  # Preserve original order
+        ordered_candidate_weights = list(weights) 
 
         if weight_labels_map:
             for _, (pw, lw) in weight_labels_map.items():
@@ -128,7 +127,7 @@ class OutputFormatter:
         computed_cols = []
         for fc in available_factors:
             suffix = fc[2:]  # Remove 'f_' prefix
-            for w in candidate_weights_set:  # Use set for O(1) lookup
+            for w in candidate_weights_set:  
                 c = f"{w}_{suffix}"
                 if c in df.columns:
                     computed_cols.append(c)
@@ -153,7 +152,7 @@ class OutputFormatter:
                     perspective_id,
                     col_name,
                     base_cols,
-                    ordered_candidate_weights,  # Deterministic order
+                    ordered_candidate_weights,  
                     id_column,
                     results,
                     weight_labels_map
@@ -206,7 +205,7 @@ class OutputFormatter:
                 record_type = None
 
             # Output weights: use container-specific list order if available,
-            # otherwise use ordered_candidate_weights (preserves legacy ordering)
+            # otherwise use ordered_candidate_weights (preserves legacy ordering TODO: Whether that is needed is highly questionable)
             if weight_labels_map and container in weight_labels_map:
                 container_pos_weights, container_lt_weights = weight_labels_map[container]
                 if mode == "positions":
@@ -215,7 +214,6 @@ class OutputFormatter:
                 else:
                     output_weights = [w for w in (container_lt_weights or []) if w in group_df.columns]
             else:
-                # Fallback: use ordered_candidate_weights order
                 output_weights = [w for w in ordered_candidate_weights if w in group_df.columns]
 
             formatted = OutputFormatter._df_to_id_dict(group_df, id_column, output_weights)

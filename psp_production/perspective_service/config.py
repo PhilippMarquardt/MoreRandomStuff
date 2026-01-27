@@ -53,7 +53,7 @@ def load_config(env_path: str = ".env") -> DatabaseConfig:
     Returns:
         DatabaseConfig instance
     """
-    # Load .env file if it exists
+    # TODO: Fix this crap, use package
     if os.path.exists(env_path):
         with open(env_path, 'r') as f:
             for line in f:

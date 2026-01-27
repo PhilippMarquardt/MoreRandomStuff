@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
 
 import polars as pl
-
+import pyodbc
 
 class DatabaseLoadError(Exception):
     """Raised when database loading fails."""
@@ -32,11 +32,12 @@ class DatabaseLoader:
             use_pyodbc: If True, use pyodbc connection. If False (default), use arrow-odbc.
         """
         if use_pyodbc:
-            import pyodbc
+            # We can use polars interface as it takes pyodbc if provided an already open connection.
+            # CAUTION: This WILL lock GIL when querying much data
             with pyodbc.connect(self._connection_string) as conn:
                 df = pl.read_database(query, conn)
         else:
-            # arrow-odbc (current behavior)
+            # arrow-odbc
             df = pl.read_database(
                 query,
                 self._connection_string,
@@ -96,7 +97,8 @@ class DatabaseLoader:
         # Build list of (table_name, query) tasks
         tasks = []
         for table_name, columns in tables_needed.items():
-            if table_name.lower() == 'position_data':
+            # We now call it position_data but it was once called instrumentinput. Since criteria were never updated we have to have it here
+            if table_name.lower() == 'position_data' or table_name.lower() == "instrumentinput":
                 continue
 
             query = self._build_reference_query(
@@ -110,7 +112,7 @@ class DatabaseLoader:
         if not tasks:
             return {}
 
-        # Execute ALL queries in parallel (each pl.read_database creates own connection)
+        # Execute ALL queries in parallel (As long as arrow-odbc connection...)
         results = {}
         with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
             futures = {
@@ -125,7 +127,8 @@ class DatabaseLoader:
                 except Exception as e:
                     raise DatabaseLoadError(f"Failed to load {table_name}: {e}")
 
-        # Post-process parent_instrument (normalize key to lowercase)
+        # Post-process parent_instrument
+        # This is needed as the instrument_id of loaded data is actually the data for positions parent_instrument_id
         if 'parent_instrument' in results and not results['parent_instrument'].is_empty():
             df = results['parent_instrument']
             rename_map = {'instrument_id': 'parent_instrument_id'}
@@ -146,11 +149,11 @@ class DatabaseLoader:
         """
         ids_str = ",".join(map(str, instrument_ids))
 
-        # Filter out instrument_id - stored proc always returns it (case-insensitive)
+        # Filter out instrument_id - stored proc always returns it
         cols_to_select = [c for c in columns if c.lower() != 'instrument_id']
         if not cols_to_select:
-            # Edge case: only instrument_id requested - skip this query
-            # (stored proc needs at least one column in @REQUIRED_COLUMNS)
+            # The stored procs always add instrument_id so skip of we just 
+            # TODO: Check if this is really correct
             return None
         cols_str = ",".join(cols_to_select)
 
@@ -198,7 +201,7 @@ class DatabaseLoader:
             return self._asset_allocation_query(asset_allocation_ids, columns)
 
         else:
-            # Generic tables - use stored proc (pass original case for DB)
+            # Generic tables - use stored proc
             if not instrument_ids:
                 return None
             return self._build_stored_proc_call(table_name.upper(), instrument_ids, columns, None, None)
@@ -208,7 +211,7 @@ class DatabaseLoader:
         valid_ids = [i for i in ids if i is not None and i != -2147483648]
         if not valid_ids:
             return None
-        # Ensure analytics_category_id is included for joining (case-insensitive check)
+        # Ensure analytics_category_id is included for joining
         columns_lower = [c.lower() for c in columns]
         if 'analytics_category_id' not in columns_lower:
             columns = ['analytics_category_id'] + list(columns)

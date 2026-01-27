@@ -171,11 +171,11 @@ class PerspectiveEngine:
                         if col_lower not in required_tables[table_lower]:
                             required_tables[table_lower].append(col_lower)
 
-        # Get required columns from modifiers (already normalized by get_modifier_required_columns)
+        # Get required columns from modifiers 
         modifier_columns = self.config.get_modifier_required_columns(list(all_modifier_names))
         for table, columns in modifier_columns.items():
             table_lower = table.lower()
-            if table_lower == 'position_data':
+            if table_lower == 'position_data' or table_lower == "instrumentinput":
                 # Skip - position_data comes from input JSON
                 continue
             if table_lower not in required_tables:

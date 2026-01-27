@@ -91,11 +91,11 @@ class DataIngestion:
         all_pos = set()
         all_lt = set()
 
-        # Top-level defaults (normalized to lowercase)
+        # Top-level defaults 
         default_pos = [w.lower() for w in (input_json.get('position_weight_labels', []) or [])]
         default_lt = [w.lower() for w in (input_json.get('lookthrough_weight_labels', []) or [])]
 
-        # Check each container for its weight labels (normalized to lowercase)
+        # Check each container for its weight labels 
         for key, container in input_json.items():
             if isinstance(container, dict) and 'positions' in container:
                 pos = [w.lower() for w in (container.get('position_weight_labels') or default_pos)]
@@ -248,7 +248,7 @@ class DataIngestion:
             ed=effective_date
         )
 
-        # Join each table (use cached column lists)
+        # Join each table 
         for table_name, ref_df in ref_data.items():
             if ref_df.is_empty():
                 continue
@@ -257,7 +257,7 @@ class DataIngestion:
             table_lower = table_name.lower()
 
             if table_lower == 'parent_instrument':
-                # Join on parent_instrument_id (only if column exists)
+                # Join on parent_instrument_id 
                 if 'parent_instrument_id' in pos_columns:
                     positions_lf = positions_lf.join(
                         ref_lf,

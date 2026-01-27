@@ -5,7 +5,7 @@ Rule dataclass for perspective rules.
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
 
-
+# TODO: Should use enum
 @dataclass
 class Rule:
     """Represents a single filtering or scaling rule."""
