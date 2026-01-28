@@ -1,769 +1,162 @@
-0) Input columns / Begriffe
-
-container ∈ {holding, selected_reference, contractual_reference}
-position_type ∈ {holding, reference} (used by apply_to)
-record_type ∈ {position, essential_lookthroughs, complete_lookthroughs} (only on lookthrough DF)
-weight label = numeric column, e.g. market_value_weight, tna_weight, …
-
-Base IDs:
-
-positions: identifier, instrument_id, sub_portfolio_id, container, position_type, weights…
-
-lookthroughs: identifier, parent_instrument_id, sub_portfolio_id, container, position_type, record_type, weights…
-
-1) Build factor columns per (config, pid)
-
-For each configuration config and perspective id pid create:
-
-Column name
-
-factor column: f_{config}_{pid}
-
-Semantics
-
-f_{config}_{pid} = NULL → row is removed for that perspective
-
-f_{config}_{pid} = s > 0 → row is kept, and s is the base scaling factor (from scaling rules)
-
-Keep predicate (minimal, high-level)
-
-Define:
-
-PreKeep(pid) = AND over preprocessing modifiers: “do not match preproc criteria” (per modifier; combined with AND)
-
-RuleKeep(pid) = boolean chaining of non-scaling perspective rules (respecting rule-to-next-rule and/or)
-
-PostAdjust(pid) = apply postprocessing “savior” modifiers by OR/AND into the running rule result (again chained inside rule result)
-
-Then:
-
-Keep: K(pid) = PreKeep(pid) ∧ RuleKeep_after_post(pid)
-
-And:
-
-Base scaling: S(pid) = ∏(scale_factor_r) over scaling rules that match (starts at 1.0, multiplied by each scaling rule’s factor)
-
-Finally the factor column is:
-
-f_{config}_{pid} = S(pid) if K(pid) else NULL
-
-So: keep first, then scaling rules provide the value written into the factor column.
-
-1.1) Lookthrough synchronization (parent → child)
-
-After computing factor columns on both frames, lookthroughs are synchronized:
-
-For each factor column f = f_{config}_{pid}:
-
-group parents by (instrument_id, sub_portfolio_id)
-
-if ANY parent has f = NULL ⇒ child factor becomes NULL
-
-else child keeps its factor
-
-Effect: if a parent position is removed for a perspective, all its lookthrough children disappear for that perspective.
-
-2) Optional rescaling (normalization to 100%)
-
-Rescaling is enabled per perspective via modifiers:
-
-positions: scale_holdings_to_100_percent
-
-lookthroughs: scale_lookthroughs_to_100_percent
-
-Rescaling does not overwrite f_{config}_{pid}.
-It creates an additional struct column per factor:
-
-Column name
-
-rescale factor struct: f_{config}_{pid}_factors
-
-Meaning
-
-f_{config}_{pid}_factors is a struct with one field per weight label w:
-
-field name: w
-
-value: the effective factor to use for weight w
-
-2.1) Positions rescaling (per container, not per sub_portfolio)
-
-For each rescaled perspective factor f and each weight label w:
-
-Denominator per container
-
-𝐷
-𝑐
-,
-𝑓
-,
-𝑤
-=
-∑
-𝑖
-∈
-𝑝
-𝑜
-𝑠
-(
-𝑐
-)
-𝑤
-𝑖
-⋅
-𝑓
-𝑖
-  
-+
-  
-∑
-𝑗
-∈
-𝐸
-𝐿
-𝑇
-(
-𝑐
-)
-𝑤
-𝑗
-⋅
-𝑓
-𝑗
-D
-c,f,w
-	​
-
-=
-i∈pos(c)
-∑
-	​
-
-w
-i
-	​
-
-⋅f
-i
-	​
-
-+
-j∈ELT(c)
-∑
-	​
-
-w
-j
-	​
-
-⋅f
-j
-	​
-
-
-(ELT = lookthrough rows with record_type = essential_lookthroughs, only if that weight exists on lookthroughs)
-
-Stored factor field per row
-
-𝑓
-𝑎
-𝑐
-𝑡
-𝑜
-𝑟
-𝑠
-𝑖
-[
-𝑤
-]
-=
-{
-𝑓
-𝑖
-𝐷
-𝑐
-,
-𝑓
-,
-𝑤
-	
-if 
-𝑓
-𝑖
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-∧
-𝐷
-𝑐
-,
-𝑓
-,
-𝑤
-≠
-0
-
-
-𝑓
-𝑖
-	
-otherwise
-factors
-i
-	​
-
-[w]={
-D
-c,f,w
-	​
-
-f
-i
-	​
-
-	​
-
-f
-i
-	​
-
-	​
-
-if f
-i
-	​
-
-
-=NULL∧D
-c,f,w
-	​
-
-
-=0
-otherwise
-	​
-
-
-This is stored as:
-
-f_factors = struct({ w1: factors[w1], w2: factors[w2], ... })
-
-2.2) Lookthrough rescaling (per parent group)
-
-Groups:
-
-(container, parent_instrument_id, record_type, sub_portfolio_id)
-
-For each rescaled factor f and weight w:
-
-𝐷
-𝑔
-,
-𝑓
-,
-𝑤
-=
-∑
-𝑗
-∈
-𝑔
-𝑤
-𝑗
-⋅
-𝑓
-𝑗
-(only rows with 
-𝑓
-𝑗
-≠
-𝑁
-𝑈
-𝐿
-𝐿
- and parent-match flag true)
-D
-g,f,w
-	​
-
-=
-j∈g
-∑
-	​
-
-w
-j
-	​
-
-⋅f
-j
-	​
-
-(only rows with f
-j
-	​
-
-
-=NULL and parent-match flag true)
-
-Per row:
-
-𝑓
-𝑎
-𝑐
-𝑡
-𝑜
-𝑟
-𝑠
-𝑗
-[
-𝑤
-]
-=
-{
-𝑓
-𝑗
-𝐷
-𝑔
-,
-𝑓
-,
-𝑤
-	
-if 
-𝑓
-𝑗
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-∧
-𝐷
-𝑔
-,
-𝑓
-,
-𝑤
-≠
-0
-
-
-𝑓
-𝑗
-	
-otherwise
-factors
-j
-	​
-
-[w]={
-D
-g,f,w
-	​
-
-f
-j
-	​
-
-	​
-
-f
-j
-	​
-
-	​
-
-if f
-j
-	​
-
-
-=NULL∧D
-g,f,w
-	​
-
-
-=0
-otherwise
-	​
-
-
-Stored in f_{config}_{pid}_factors the same way.
-
-3) Final output weight columns (materialized in processor)
-
-For each perspective factor column f = f_{config}_{pid}, each weight label w:
-
-Column name
-
-final weight output: {w}_{config}_{pid}
-
-Value
-
-If rescaling struct exists:
-
-𝑤
-𝑐
-𝑜
-𝑛
-𝑓
-𝑖
-𝑔
-,
-𝑝
-𝑖
-𝑑
-=
-{
-𝑤
-⋅
-𝑓
-_
-𝑓
-𝑎
-𝑐
-𝑡
-𝑜
-𝑟
-𝑠
-[
-𝑤
-]
-	
-if 
-𝑓
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-
-
-𝑁
-𝑈
-𝐿
-𝐿
-	
-if 
-𝑓
-=
-𝑁
-𝑈
-𝐿
-𝐿
-w
-config,pid
-	​
-
-={
-w⋅f_factors[w]
-NULL
-	​
-
-if f
-
-=NULL
-if f=NULL
-	​
-
-
-If no rescaling struct:
-
-𝑤
-𝑐
-𝑜
-𝑛
-𝑓
-𝑖
-𝑔
-,
-𝑝
-𝑖
-𝑑
-=
-{
-𝑤
-⋅
-𝑓
-	
-if 
-𝑓
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-
-
-𝑁
-𝑈
-𝐿
-𝐿
-	
-if 
-𝑓
-=
-𝑁
-𝑈
-𝐿
-𝐿
-w
-config,pid
-	​
-
-={
-w⋅f
-NULL
-	​
-
-if f
-
-=NULL
-if f=NULL
-	​
-
-
-So OutputFormatter only selects {w}_{config}_{pid} and renames back to w for the JSON.
-
-4) Scale factors dict (kept fraction per container/perspective/weight)
-
-Output location:
-
-results[config][pid][container]["scale_factors"][w]
-
-Definitions for each container c, perspective factor f, weight w:
-
-Total universe mass (raw weights, includes essential LT where present):
-
-𝑇
-𝑐
-,
-𝑤
-=
-∑
-𝑖
-∈
-𝑝
-𝑜
-𝑠
-(
-𝑐
-)
-𝑤
-𝑖
-  
-+
-  
-∑
-𝑗
-∈
-𝐸
-𝐿
-𝑇
-(
-𝑐
-)
-𝑤
-𝑗
-T
-c,w
-	​
-
-=
-i∈pos(c)
-∑
-	​
-
-w
-i
-	​
-
-+
-j∈ELT(c)
-∑
-	​
-
-w
-j
-	​
-
-
-If scale_holdings_to_100_percent is OFF for that perspective:
-
-scale_factors[w] = 1.0
-
-If scale_holdings_to_100_percent is ON:
-Kept mass uses “economic mass” = w * f (consistent with how rescaling denom was defined):
-
-𝐾
-𝑐
-,
-𝑓
-,
-𝑤
-=
-∑
-𝑖
-∈
-𝑝
-𝑜
-𝑠
-(
-𝑐
-)
-,
-𝑓
-𝑖
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-𝑤
-𝑖
-⋅
-𝑓
-𝑖
-  
-+
-  
-∑
-𝑗
-∈
-𝐸
-𝐿
-𝑇
-(
-𝑐
-)
-,
-𝑓
-𝑗
-≠
-𝑁
-𝑈
-𝐿
-𝐿
-𝑤
-𝑗
-⋅
-𝑓
-𝑗
-K
-c,f,w
-	​
-
-=
-i∈pos(c),f
-i
-	​
-
-
-=NULL
-∑
-	​
-
-w
-i
-	​
-
-⋅f
-i
-	​
-
-+
-j∈ELT(c),f
-j
-	​
-
-
-=NULL
-∑
-	​
-
-w
-j
-	​
-
-⋅f
-j
-	​
-
-
-Then:
-
-𝑆
-𝐹
-𝑐
-,
-𝑓
-,
-𝑤
-=
-{
-𝐾
-𝑐
-,
-𝑓
-,
-𝑤
-𝑇
-𝑐
-,
-𝑤
-	
-if 
-𝑇
-𝑐
-,
-𝑤
-≠
-0
-
-
-(omit)
-	
-if 
-𝑇
-𝑐
-,
-𝑤
-=
-0
-SF
-c,f,w
-	​
-
-={
-T
-c,w
-	​
-
-K
-c,f,w
-	​
-
-	​
-
-(omit)
-	​
-
-if T
-c,w
-	​
-
-
-=0
-if T
-c,w
-	​
-
-=0
-	​
-
-
-Intent downstream:
-
-notional attribution often uses something like TNA * output_weight * SF to reconstruct correct “kept” economic size.
+import polars as pl
+
+POS_W = ["initial_weight", "resulting_weight", "initial_exposure_weight", "resulting_exposure_weight"]
+REF_W = "weight"   # selected/contractual use "weight"
+LT_W  = "weight"   # lookthrough child weight (joined as weight_right)
+
+def _suffix_from_factor_col(fcol: str) -> str:
+    # f_{config}_{pid} -> {config}_{pid}
+    return fcol[2:]
+
+def build_initial_metrics_all_levels(
+    positions_lf: pl.LazyFrame,
+    lookthroughs_lf: pl.LazyFrame | None,
+    metadata_map: dict,   # {config_name: {pid: "f_{config}_{pid}"}}
+) -> dict[str, pl.LazyFrame]:
+    """
+    Returns: {"no": lf, "essential": lf, "complete": lf}
+    Each lf contains PI, PR, BS, BC computed per (config_name, perspective_id, instrument_id, parent_instrument_id, sub_portfolio_id, container).
+    """
+
+    out = {"no": [], "essential": [], "complete": []}
+
+    for config_name, pmap in metadata_map.items():
+        for pid, fcol in pmap.items():
+            suffix = _suffix_from_factor_col(fcol)
+
+            # PSP-produced per-perspective weight columns
+            iw  = f"initial_weight_{suffix}"
+            rw  = f"resulting_weight_{suffix}"
+            iew = f"initial_exposure_weight_{suffix}"
+            rew = f"resulting_exposure_weight_{suffix}"
+            wref = f"{REF_W}_{suffix}"     # references
+            wlt  = f"{LT_W}_{suffix}"      # lookthroughs
+
+            # kept positions for this perspective
+            pos = (
+                positions_lf
+                .filter(pl.col(fcol).is_not_null())
+                .with_columns([
+                    pl.lit(config_name).alias("config_name"),
+                    pl.lit(int(pid)).alias("perspective_id"),
+                ])
+            )
+
+            IS_HOLDING     = pl.col("container") == "holding"
+            IS_SELECTED    = pl.col("container") == "selected_reference"
+            IS_CONTRACTUAL = pl.col("container") == "contractual_reference"
+
+            # -------------------------
+            # Level = "no"  (no join)
+            # -------------------------
+            no_lf = (
+                pos.with_columns([
+                    # holdings use initial_weight / resulting_weight at level "no"
+                    pl.when(IS_HOLDING).then(pl.col(iw)).otherwise(pl.lit(None)).alias("PI"),
+                    pl.when(IS_HOLDING).then(pl.col(rw)).otherwise(pl.lit(None)).alias("PR"),
+
+                    # references always come from "weight"
+                    pl.when(IS_SELECTED).then(pl.col(wref)).otherwise(pl.lit(None)).alias("BS"),
+                    pl.when(IS_CONTRACTUAL).then(pl.col(wref)).otherwise(pl.lit(None)).alias("BC"),
+
+                    # no underlying => parent == instrument
+                    pl.col("instrument_id").alias("parent_instrument_id"),
+                ])
+                .select([
+                    "config_name", "perspective_id",
+                    "sub_portfolio_id",
+                    "container",
+                    "instrument_id", "parent_instrument_id",
+                    "PI", "PR", "BS", "BC",
+                ])
+            )
+            out["no"].append(no_lf)
+
+            # If we have no lookthroughs, skip essential/complete
+            if lookthroughs_lf is None:
+                continue
+
+            # Build common LT frame for this perspective (kept children)
+            # IMPORTANT: rename child cols so we don't rely on Polars "_right" suffixing.
+            def lt_for(record_type_value: str) -> pl.LazyFrame:
+                return (
+                    lookthroughs_lf
+                    .filter(
+                        pl.col(fcol).is_not_null()
+                        & (pl.col("record_type") == record_type_value)
+                    )
+                    .select([
+                        "parent_instrument_id",
+                        "sub_portfolio_id",
+                        pl.col("instrument_id").alias("instrument_id_right"),
+                        pl.col(wlt).alias("weight_right"),
+                    ])
+                )
+
+            # -------------------------
+            # Level = "essential" / "complete"
+            # holdings: if underlying exists => exposure_weight * weight_right
+            # holdings: if no underlying     => exposure_weight
+            # references: same as always
+            # -------------------------
+            for level, rt in [("essential", "essential_lookthroughs"), ("complete", "complete_lookthroughs")]:
+                lt = lt_for(rt)
+
+                joined = (
+                    pos.join(
+                        lt,
+                        how="left",
+                        left_on=["instrument_id", "sub_portfolio_id"],
+                        right_on=["parent_instrument_id", "sub_portfolio_id"],
+                        coalesce=False,
+                    )
+                )
+
+                child_present = pl.col("instrument_id_right").is_not_null()
+
+                level_lf = (
+                    joined.with_columns([
+                        # parent_instrument_id logic: if child exists, parent = original instrument_id; else parent=instrument_id
+                        pl.col("instrument_id").alias("parent_instrument_id"),
+
+                        # instrument_id becomes child when child exists
+                        pl.when(child_present)
+                          .then(pl.col("instrument_id_right"))
+                          .otherwise(pl.col("instrument_id"))
+                          .alias("instrument_id"),
+
+                        # holdings PI/PR logic at LT levels uses exposure weights
+                        pl.when(IS_HOLDING & child_present)
+                          .then(pl.col(iew) * pl.col("weight_right"))
+                          .when(IS_HOLDING & ~child_present)
+                          .then(pl.col(iew))
+                          .otherwise(pl.lit(None))
+                          .alias("PI"),
+
+                        pl.when(IS_HOLDING & child_present)
+                          .then(pl.col(rew) * pl.col("weight_right"))
+                          .when(IS_HOLDING & ~child_present)
+                          .then(pl.col(rew))
+                          .otherwise(pl.lit(None))
+                          .alias("PR"),
+
+                        # references unchanged
+                        pl.when(IS_SELECTED).then(pl.col(wref)).otherwise(pl.lit(None)).alias("BS"),
+                        pl.when(IS_CONTRACTUAL).then(pl.col(wref)).otherwise(pl.lit(None)).alias("BC"),
+                    ])
+                    .select([
+                        "config_name", "perspective_id",
+                        "sub_portfolio_id",
+                        "container",
+                        "instrument_id", "parent_instrument_id",
+                        "PI", "PR", "BS", "BC",
+                    ])
+                )
+
+                out[level].append(level_lf)
+
+    # concat per level
+    return {
+        lvl: (pl.concat(frames, how="vertical_relaxed") if frames else pl.LazyFrame())
+        for lvl, frames in out.items()
+    }
