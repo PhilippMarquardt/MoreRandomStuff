@@ -51,7 +51,8 @@ class DatabaseLoader:
     def load_perspectives(self, system_version_timestamp: Optional[str] = None) -> Dict[int, Dict]:
         """Load perspectives from FN_GET_SUBSETTING_SERVICE_PERSPECTIVES."""
         try:
-            query = f"SELECT [dbo].[FN_GET_SUBSETTING_SERVICE_PERSPECTIVES]({system_version_timestamp!r})"
+            sql_timestamp = 'null' if system_version_timestamp is None else repr(system_version_timestamp)
+            query = f"SELECT [dbo].[FN_GET_SUBSETTING_SERVICE_PERSPECTIVES]({sql_timestamp})"
             df = self._execute_query(query, use_pyodbc=True)
 
             if df.is_empty():

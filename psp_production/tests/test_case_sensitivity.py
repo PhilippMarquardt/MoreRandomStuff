@@ -591,6 +591,7 @@ def run_tests():
         test_determine_required_tables_case_normalization,
         test_determine_required_tables_includes_position_data,
         test_determine_required_tables_edge_cases,
+        test_determine_required_tables_always_includes_sub_portfolio_id,
 
         # DatabaseLoader tests
         test_build_reference_query_instrument_case_variations,

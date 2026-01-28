@@ -232,7 +232,9 @@ class DataIngestion:
         else:
             asset_allocation_ids = []
 
-        tables_to_load = dict(required_tables)
+        # Filter out position_data - it's not a reference table, it comes from input JSON
+        tables_to_load = {k: v for k, v in required_tables.items()
+                          if k.lower() not in ('position_data', 'instrumentinput')}
 
         # Skip if no tables to load
         if not tables_to_load:
