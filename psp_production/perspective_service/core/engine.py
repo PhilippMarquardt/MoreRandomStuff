@@ -146,7 +146,7 @@ class PerspectiveEngine:
         Determine which database tables are needed based on perspective rules and modifiers.
 
         Returns:
-            Dict of {table_name: [column_names]}
+            Dict of {table_name: [column_names]} including position_data requirements
         """
         required_tables: Dict[str, List[str]] = {}
 
@@ -168,6 +168,9 @@ class PerspectiveEngine:
             if pid in self.config.required_columns_by_perspective:
                 for table, columns in self.config.required_columns_by_perspective[pid].items():
                     table_lower = table.lower()
+                    # Legacy alias: InstrumentInput -> position_data
+                    if table_lower == 'instrumentinput':
+                        table_lower = 'position_data'
                     if table_lower not in required_tables:
                         required_tables[table_lower] = []
                     for col in columns:
@@ -175,13 +178,13 @@ class PerspectiveEngine:
                         if col_lower not in required_tables[table_lower]:
                             required_tables[table_lower].append(col_lower)
 
-        # Get required columns from modifiers 
+        # Get required columns from modifiers
         modifier_columns = self.config.get_modifier_required_columns(list(all_modifier_names))
         for table, columns in modifier_columns.items():
             table_lower = table.lower()
-            if table_lower == 'position_data' or table_lower == "instrumentinput":
-                # Skip - position_data comes from input JSON
-                continue
+            # Legacy alias: InstrumentInput -> position_data
+            if table_lower == 'instrumentinput':
+                table_lower = 'position_data'
             if table_lower not in required_tables:
                 required_tables[table_lower] = []
             for col in columns:
@@ -189,7 +192,43 @@ class PerspectiveEngine:
                 if col_lower not in required_tables[table_lower]:
                     required_tables[table_lower].append(col_lower)
 
+        # Handle edge cases: add join key requirements to position_data
+        self._handle_requirements_edge_cases(required_tables)
+
         return required_tables
+
+    def _handle_requirements_edge_cases(self, requirements: Dict[str, List[str]]) -> None:
+        """
+        Handle edge cases where reference table join keys must come from position_data.
+
+        - PARENT_INSTRUMENT.instrument_id -> position_data.parent_instrument_id
+        - ASSET_ALLOCATION_ANALYTICS_CATEGORY_V.analytics_category_id -> position_data.asset_allocation_id
+        """
+        parent_key = 'parent_instrument'
+        asset_key = 'asset_allocation_analytics_category_v'
+        pos_key = 'position_data'
+
+        if parent_key in requirements or asset_key in requirements:
+            if pos_key not in requirements:
+                requirements[pos_key] = []
+
+            # PARENT_INSTRUMENT: join key is instrument_id -> parent_instrument_id
+            if parent_key in requirements:
+                if 'instrument_id' in requirements[parent_key]:
+                    if 'parent_instrument_id' not in requirements[pos_key]:
+                        requirements[pos_key].append('parent_instrument_id')
+                    requirements[parent_key].remove('instrument_id')
+                if not requirements[parent_key]:
+                    del requirements[parent_key]
+
+            # ASSET_ALLOCATION_ANALYTICS_CATEGORY_V: join key is analytics_category_id -> asset_allocation_id
+            if asset_key in requirements:
+                if 'analytics_category_id' in requirements[asset_key]:
+                    if 'asset_allocation_id' not in requirements[pos_key]:
+                        requirements[pos_key].append('asset_allocation_id')
+                    requirements[asset_key].remove('analytics_category_id')
+                if not requirements[asset_key]:
+                    del requirements[asset_key]
 
     def _precompute_nested_criteria(self,
                                     positions_lf: pl.LazyFrame,

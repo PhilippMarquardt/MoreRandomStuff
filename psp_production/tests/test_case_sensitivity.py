@@ -192,8 +192,8 @@ def test_determine_required_tables_case_normalization():
     print("[PASS] test_determine_required_tables_case_normalization")
 
 
-def test_determine_required_tables_skips_position_data_any_case():
-    """Test that position_data is skipped regardless of case."""
+def test_determine_required_tables_includes_position_data():
+    """Test that position_data is included and normalized to lowercase."""
     engine = PerspectiveEngine(connection_string=None)
     engine.config.default_modifiers = []
 
@@ -218,11 +218,58 @@ def test_determine_required_tables_skips_position_data_any_case():
 
     result = engine._determine_required_tables(perspective_configs)
 
-    # position_data should be skipped (it comes from input JSON, not DB)
-    assert 'position_data' not in result, f"position_data should be skipped, got {result.keys()}"
+    # position_data should be included (caller needs to know what position columns to send)
+    assert 'position_data' in result, f"position_data should be included, got {result.keys()}"
+    assert 'liquidity_type_id' in result['position_data'], f"Expected liquidity_type_id in position_data"
     assert 'instrument' in result
 
-    print("[PASS] test_determine_required_tables_skips_position_data_any_case")
+    print("[PASS] test_determine_required_tables_includes_position_data")
+
+
+def test_determine_required_tables_edge_cases():
+    """Test edge case handling for asset_allocation and parent_instrument join keys."""
+    engine = PerspectiveEngine(connection_string=None)
+    engine.config.default_modifiers = []
+
+    # Add perspective with ASSET_ALLOCATION_ANALYTICS_CATEGORY_V and PARENT_INSTRUMENT
+    engine.config.perspectives[1] = []
+    engine.config.required_columns_by_perspective[1] = {
+        'ASSET_ALLOCATION_ANALYTICS_CATEGORY_V': ['analytics_category_id', 'category_name'],
+        'PARENT_INSTRUMENT': ['instrument_id', 'parent_name'],
+        'INSTRUMENT': ['name']
+    }
+
+    perspective_configs = {
+        'config1': {'1': []}
+    }
+
+    result = engine._determine_required_tables(perspective_configs)
+
+    # position_data should have asset_allocation_id and parent_instrument_id added
+    assert 'position_data' in result, f"position_data should be created for join keys"
+    assert 'asset_allocation_id' in result['position_data'], \
+        f"asset_allocation_id should be added to position_data, got {result.get('position_data')}"
+    assert 'parent_instrument_id' in result['position_data'], \
+        f"parent_instrument_id should be added to position_data, got {result.get('position_data')}"
+
+    # analytics_category_id should be removed from asset_allocation table (it's a join key)
+    if 'asset_allocation_analytics_category_v' in result:
+        assert 'analytics_category_id' not in result['asset_allocation_analytics_category_v'], \
+            "analytics_category_id should be removed from asset_allocation table"
+        # category_name should still be there
+        assert 'category_name' in result['asset_allocation_analytics_category_v']
+
+    # instrument_id should be removed from parent_instrument table (it's a join key)
+    if 'parent_instrument' in result:
+        assert 'instrument_id' not in result['parent_instrument'], \
+            "instrument_id should be removed from parent_instrument table"
+        # parent_name should still be there
+        assert 'parent_name' in result['parent_instrument']
+
+    # instrument table should still be there
+    assert 'instrument' in result
+
+    print("[PASS] test_determine_required_tables_edge_cases")
 
 
 # =============================================================================
@@ -520,7 +567,8 @@ def run_tests():
 
         # Engine tests
         test_determine_required_tables_case_normalization,
-        test_determine_required_tables_skips_position_data_any_case,
+        test_determine_required_tables_includes_position_data,
+        test_determine_required_tables_edge_cases,
 
         # DatabaseLoader tests
         test_build_reference_query_instrument_case_variations,
