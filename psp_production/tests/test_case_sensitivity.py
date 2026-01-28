@@ -272,6 +272,28 @@ def test_determine_required_tables_edge_cases():
     print("[PASS] test_determine_required_tables_edge_cases")
 
 
+def test_determine_required_tables_always_includes_sub_portfolio_id():
+    """Test that sub_portfolio_id is always included in position_data."""
+    engine = PerspectiveEngine(connection_string=None)
+    engine.config.default_modifiers = []
+
+    # Empty perspective with no modifiers
+    engine.config.perspectives[1] = []
+
+    perspective_configs = {
+        'config1': {'1': []}
+    }
+
+    result = engine._determine_required_tables(perspective_configs)
+
+    # position_data should always be present with sub_portfolio_id
+    assert 'position_data' in result, f"position_data should always be present"
+    assert 'sub_portfolio_id' in result['position_data'], \
+        f"sub_portfolio_id should always be in position_data, got {result.get('position_data')}"
+
+    print("[PASS] test_determine_required_tables_always_includes_sub_portfolio_id")
+
+
 # =============================================================================
 # DatabaseLoader Tests
 # =============================================================================

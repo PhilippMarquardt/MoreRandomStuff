@@ -195,6 +195,12 @@ class PerspectiveEngine:
         # Handle edge cases: add join key requirements to position_data
         self._handle_requirements_edge_cases(required_tables)
 
+        # Always require sub_portfolio_id in position_data
+        if 'position_data' not in required_tables:
+            required_tables['position_data'] = []
+        if 'sub_portfolio_id' not in required_tables['position_data']:
+            required_tables['position_data'].append('sub_portfolio_id')
+
         return required_tables
 
     def _handle_requirements_edge_cases(self, requirements: Dict[str, List[str]]) -> None:
