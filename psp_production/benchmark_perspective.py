@@ -195,15 +195,14 @@ def run_benchmark(num_positions: int = 100000, num_perspectives: int = 10):
 
     # Rescaling
     t_rescale = time.perf_counter()
-    positions_lf, lookthroughs_lf = processor._apply_rescaling(
+    positions_lf, lookthroughs_lf, sf_data = processor._apply_rescaling(
         positions_lf,
         lookthroughs_lf,
         perspective_configs,
         metadata_map,
-        ["weight"],
-        ["weight"],
         has_lookthroughs,
-        None
+        {},
+        weight_labels_map
     )
     timings["rescaling"] = time.perf_counter() - t_rescale
     print(f"    Rescaling: {timings['rescaling']:.3f}s")
