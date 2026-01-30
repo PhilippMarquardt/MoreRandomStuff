@@ -624,142 +624,175 @@ class PerspectiveProcessor:
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]]
     ) -> Optional[pl.LazyFrame]:
         """
-        Build scale factors LazyFrame for perspectives with scale_holdings_to_100_percent.
+        Build scale factors LazyFrame efficiently using ONE plan.
 
-        Returns None if no rescaling enabled for any perspective.
-
-        Formula:
-            numerator = sum(w * fcol) for kept positions + kept essential LTs
-            denominator = sum(w) for ALL positions + ALL essential LTs
-            scale_factor = numerator / denominator
+        - One group_by for all numerators (kept positions + kept ELT)
+        - One group_by for all denominators (ALL positions + ALL ELT)
+        - Unpivot to long format and compute scale_factor = num / den
         """
-        # Find perspectives with scale_holdings_to_100_percent enabled
-        rescale_info = []  # List of (config_name, perspective_id, fcol)
-        for config_name, pmap in perspective_configs.items():
+        # 1) Which factor cols need SF?
+        rescale_fcols: List[Tuple[str, int, str]] = []
+        for cfg, pmap in perspective_configs.items():
             for pid in self._get_rescale_perspectives(pmap, "scale_holdings_to_100_percent"):
-                fcol = metadata_map[config_name][pid]
-                rescale_info.append((config_name, pid, fcol))
+                fcol = metadata_map[cfg][pid]
+                rescale_fcols.append((cfg, pid, fcol))
 
-        if not rescale_info:
+        if not rescale_fcols:
             return None
 
-        # Resolve valid weight labels from weight_labels_map
         pos_schema = set(positions_lf.collect_schema().names())
-        lt_schema = (
-            set(lookthroughs_lf.collect_schema().names())
-            if lookthroughs_lf is not None
-            else set()
-        )
+        lt_schema = set(lookthroughs_lf.collect_schema().names()) if lookthroughs_lf is not None else set()
 
-        all_pos_weights = set()
+        # 2) Valid weight labels
+        all_pos_weights = []
+        seen = set()
         for _, (pw, _) in weight_labels_map.items():
-            all_pos_weights.update(pw or [])
+            for w in (pw or []):
+                if w not in seen:
+                    all_pos_weights.append(w)
+                    seen.add(w)
 
-        valid_weights = [w for w in all_pos_weights if w in pos_schema]
-        if not valid_weights:
+        weights = [w for w in all_pos_weights if w in pos_schema]
+        if not weights:
             return None
 
-        # Weights that exist on essential lookthroughs
-        elt_weights = [w for w in valid_weights if w in lt_schema]
+        elt_weights = [w for w in weights if w in lt_schema]
 
-        # Compute total denominators per container (positions + essential LT)
-        tot_pos = (
-            positions_lf
-            .group_by("container")
-            .agg([pl.col(w).sum().alias(f"__totpos__{w}") for w in valid_weights])
-        )
+        # 3) TOTAL denominator: sum(w) over ALL positions + ALL essential LT
+        tot_pos = positions_lf.group_by("container").agg([
+            pl.col(w).sum().alias(f"tot__{w}") for w in weights
+        ])
 
-        if elt_weights and lookthroughs_lf is not None:
+        if lookthroughs_lf is not None and elt_weights:
             tot_elt = (
                 lookthroughs_lf
                 .filter(pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
                 .group_by("container")
-                .agg([pl.col(w).sum().alias(f"__totelt__{w}") for w in elt_weights])
+                .agg([pl.col(w).sum().alias(f"totelt__{w}") for w in elt_weights])
             )
-            total_denoms = tot_pos.join(tot_elt, on="container", how="left")
-            # Combine: total = positions + essential LT
-            combine_exprs = []
-            for w in valid_weights:
-                if w in elt_weights:
-                    combine_exprs.append(
-                        (pl.col(f"__totpos__{w}") + pl.col(f"__totelt__{w}").fill_null(0.0)).alias(f"__tot__{w}")
-                    )
-                else:
-                    combine_exprs.append(pl.col(f"__totpos__{w}").alias(f"__tot__{w}"))
-            total_denoms = total_denoms.with_columns(combine_exprs)
+            tot = tot_pos.join(tot_elt, on="container", how="left").with_columns([
+                (pl.col(f"tot__{w}") + pl.col(f"totelt__{w}").fill_null(0.0)).alias(f"den__{w}")
+                if w in elt_weights else pl.col(f"tot__{w}").alias(f"den__{w}")
+                for w in weights
+            ])
         else:
-            total_denoms = tot_pos.with_columns([
-                pl.col(f"__totpos__{w}").alias(f"__tot__{w}") for w in valid_weights
+            tot = tot_pos.with_columns([
+                pl.col(f"tot__{w}").alias(f"den__{w}") for w in weights
             ])
 
-        # Build scale factors for each rescaling perspective
-        scale_factor_frames = []
-
-        for config_name, pid, fcol in rescale_info:
+        # 4) KEPT numerator: sum(w * fcol) over kept rows - ALL expressions in ONE group_by
+        keep_exprs = []
+        for cfg, pid, fcol in rescale_fcols:
             if fcol not in pos_schema:
                 continue
-
-            # Kept positions numerator: sum(w * fcol) for kept rows
-            kept_pos = positions_lf.filter(pl.col(fcol).is_not_null())
-            keep_pos_nums = (
-                kept_pos
-                .group_by("container")
-                .agg([(pl.col(w) * pl.col(fcol)).sum().alias(f"__keeppos__{w}") for w in valid_weights])
-            )
-
-            # Include kept essential LT if fcol exists on lookthroughs
-            if elt_weights and lookthroughs_lf is not None and fcol in lt_schema:
-                kept_elt = (
-                    lookthroughs_lf
-                    .filter(
-                        (pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
-                        & pl.col(fcol).is_not_null()
-                    )
+            for w in weights:
+                keep_exprs.append(
+                    (pl.col(w) * pl.col(fcol))
+                    .filter(pl.col(fcol).is_not_null())
+                    .sum()
+                    .alias(f"keep__{cfg}__{pid}__{w}")
                 )
-                keep_elt_nums = (
-                    kept_elt
-                    .group_by("container")
-                    .agg([(pl.col(w) * pl.col(fcol)).sum().alias(f"__keepelt__{w}") for w in elt_weights])
-                )
-                keep_nums = keep_pos_nums.join(keep_elt_nums, on="container", how="left")
-                # Combine numerators
-                combine_exprs = []
-                for w in valid_weights:
-                    if w in elt_weights:
-                        combine_exprs.append(
-                            (pl.col(f"__keeppos__{w}") + pl.col(f"__keepelt__{w}").fill_null(0.0)).alias(f"__keep__{w}")
-                        )
-                    else:
-                        combine_exprs.append(pl.col(f"__keeppos__{w}").alias(f"__keep__{w}"))
-                keep_nums = keep_nums.with_columns(combine_exprs)
-            else:
-                keep_nums = keep_pos_nums.with_columns([
-                    pl.col(f"__keeppos__{w}").alias(f"__keep__{w}") for w in valid_weights
-                ])
 
-            # Join totals and compute scale_factor = keep / total
-            joined = keep_nums.join(total_denoms, on="container", how="left")
-
-            # Build flat rows: one per (container, weight_label)
-            for w in valid_weights:
-                sf_frame = (
-                    joined
-                    .select([
-                        pl.lit(config_name).alias("config"),
-                        pl.lit(pid).alias("perspective_id"),
-                        pl.col("container"),
-                        pl.lit(w).alias("weight_label"),
-                        pl.when(pl.col(f"__tot__{w}") > 0)
-                        .then(pl.col(f"__keep__{w}").fill_null(0.0) / pl.col(f"__tot__{w}"))
-                        .otherwise(pl.lit(None))
-                        .alias("scale_factor")
-                    ])
-                )
-                scale_factor_frames.append(sf_frame)
-
-        if not scale_factor_frames:
+        if not keep_exprs:
             return None
 
-        # Union all scale factor frames
-        result = pl.concat(scale_factor_frames)
-        return result
+        kept_pos = positions_lf.group_by("container").agg(keep_exprs)
+
+        # Include kept essential LT contributions
+        if lookthroughs_lf is not None and elt_weights:
+            lt_keep_exprs = []
+            for cfg, pid, fcol in rescale_fcols:
+                if fcol not in lt_schema:
+                    continue
+                for w in elt_weights:
+                    lt_keep_exprs.append(
+                        (pl.col(w) * pl.col(fcol))
+                        .filter(
+                            (pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
+                            & pl.col(fcol).is_not_null()
+                        )
+                        .sum()
+                        .alias(f"keepelt__{cfg}__{pid}__{w}")
+                    )
+            if lt_keep_exprs:
+                kept_elt = lookthroughs_lf.group_by("container").agg(lt_keep_exprs)
+                kept = kept_pos.join(kept_elt, on="container", how="left")
+                # Combine keep + keepelt -> num__
+                combine_cols = []
+                kept_schema = set(kept.collect_schema().names())
+                for cfg, pid, fcol in rescale_fcols:
+                    for w in weights:
+                        keep_col = f"keep__{cfg}__{pid}__{w}"
+                        keepelt_col = f"keepelt__{cfg}__{pid}__{w}"
+                        if keep_col not in kept_schema:
+                            continue
+                        base = pl.col(keep_col).fill_null(0.0)
+                        if w in elt_weights and keepelt_col in kept_schema:
+                            base = base + pl.col(keepelt_col).fill_null(0.0)
+                        combine_cols.append(base.alias(f"num__{cfg}__{pid}__{w}"))
+                kept = kept.with_columns(combine_cols)
+            else:
+                kept_schema = set(kept_pos.collect_schema().names())
+                kept = kept_pos.with_columns([
+                    pl.col(f"keep__{cfg}__{pid}__{w}").fill_null(0.0).alias(f"num__{cfg}__{pid}__{w}")
+                    for cfg, pid, _ in rescale_fcols for w in weights
+                    if f"keep__{cfg}__{pid}__{w}" in kept_schema
+                ])
+        else:
+            kept_schema = set(kept_pos.collect_schema().names())
+            kept = kept_pos.with_columns([
+                pl.col(f"keep__{cfg}__{pid}__{w}").fill_null(0.0).alias(f"num__{cfg}__{pid}__{w}")
+                for cfg, pid, _ in rescale_fcols for w in weights
+                if f"keep__{cfg}__{pid}__{w}" in kept_schema
+            ])
+
+        # 5) Unpivot numerators and denominators to long format, then join
+        num_cols = [c for c in kept.collect_schema().names() if c.startswith("num__")]
+        if not num_cols:
+            return None
+
+        long_num = kept.unpivot(
+            index=["container"],
+            on=num_cols,
+            variable_name="k",
+            value_name="num",
+        )
+
+        # Parse "num__{cfg}__{pid}__{w}"
+        long_num = long_num.with_columns([
+            pl.col("k").str.split("__").alias("_parts"),
+        ]).with_columns([
+            pl.col("_parts").list.get(1).alias("config"),
+            pl.col("_parts").list.get(2).cast(pl.Int64).alias("perspective_id"),
+            pl.col("_parts").list.get(3).alias("weight_label"),
+        ]).drop(["k", "_parts"])
+
+        # Unpivot denominators to long format
+        den_cols = [f"den__{w}" for w in weights]
+        long_den = tot.unpivot(
+            index=["container"],
+            on=den_cols,
+            variable_name="den_k",
+            value_name="den",
+        ).with_columns([
+            pl.col("den_k").str.replace("den__", "").alias("weight_label")
+        ]).drop("den_k")
+
+        # Join numerators with denominators by (container, weight_label)
+        joined = long_num.join(long_den, on=["container", "weight_label"], how="left")
+
+        # Compute scale_factor = num / den
+        # When num == 0 (nothing kept), return 1.0 as default (irrelevant since nothing to multiply)
+        # When den == 0, return None
+        return joined.select([
+            "config",
+            "perspective_id",
+            "container",
+            "weight_label",
+            pl.when(pl.col("den").is_null() | (pl.col("den") == 0.0))
+              .then(pl.lit(None))
+              .when(pl.col("num").is_null() | (pl.col("num") == 0.0))
+              .then(pl.lit(1.0))
+              .otherwise(pl.col("num") / pl.col("den"))
+              .alias("scale_factor")
+        ])
