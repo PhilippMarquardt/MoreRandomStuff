@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional
 class Modifier:
     """Represents a rule modifier that can adjust rule behavior."""
     name: str
-    apply_to: str  # 'position', 'lookthrough', or 'both'
+    apply_to: str  # 'holding', 'reference', or 'both'
     modifier_type: str  # 'PreProcessing', 'PostProcessing', or 'Scaling'
     criteria: Optional[Dict[str, Any]] = None
     rule_result_operator: Optional[str] = None  # 'and' or 'or'

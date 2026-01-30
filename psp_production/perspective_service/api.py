@@ -2,10 +2,12 @@
 High-level API for the Perspective Service.
 """
 
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
-from .core.engine import PerspectiveEngine
-from .config import DatabaseConfig
+import polars as pl
+
+from perspective_service.core.engine import PerspectiveEngine
+from perspective_service.config import DatabaseConfig
 
 
 class PerspectiveService:
@@ -41,30 +43,24 @@ class PerspectiveService:
     def process(
         self,
         request: Dict,
-        verbose: bool = False,
-        flatten_response: bool = False
+        return_raw_dataframes: bool = False
     ) -> Dict:
         """
         Process request through perspective rules.
 
         All parameters are extracted from the request JSON:
         - perspective_configurations: {config_name: {perspective_id: [modifier_names]}}
-        - position_weight_labels: Weight column names for positions (default: ['weight'])
-        - lookthrough_weight_labels: Weight column names for lookthroughs (default: position_weight_labels)
+        - position_weight_labels / lookthrough_weight_labels: extracted per-container from JSON
         - system_version_timestamp: Optional timestamp for temporal DB queries
 
         Args:
             request: Full request JSON containing positions, configs, and parameters
-            verbose: Whether to include extra metadata in output
-            flatten_response: Whether to flatten output to columnar format
+            return_raw_dataframes: If True, return raw DataFrames instead of formatted output
 
         Returns:
-            Dict with perspective_configurations containing filtered/scaled weights
+            Dict with perspective_configurations, or raw DataFrames dict if return_raw_dataframes=True
         """
-        # Extract parameters from request JSON
         perspective_configs = request.get('perspective_configurations', {})
-        position_weights = request.get('position_weight_labels', ['weight'])
-        lookthrough_weights = request.get('lookthrough_weight_labels', position_weights)
         system_version_timestamp = request.get('system_version_timestamp')
 
         engine = PerspectiveEngine(
@@ -74,10 +70,50 @@ class PerspectiveService:
         return engine.process(
             input_json=request,
             perspective_configs=perspective_configs,
-            position_weights=position_weights,
-            lookthrough_weights=lookthrough_weights,
-            verbose=verbose,
-            flatten_response=flatten_response
+            return_raw_dataframes=return_raw_dataframes
+        )
+
+    def process_dataframes(
+        self,
+        positions: pl.LazyFrame,
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
+        perspective_configs: Dict[str, Dict[str, List[str]]],
+        lookthroughs: Optional[pl.LazyFrame] = None,
+        effective_date: Optional[str] = None,
+        custom_perspective_rules: Optional[Dict] = None,
+        system_version_timestamp: Optional[str] = None,
+        return_raw_dataframes: bool = False
+    ) -> Dict:
+        """
+        Process pre-loaded DataFrames through perspective rules.
+
+        Use this when you have DataFrames from an external source (not JSON).
+
+        Args:
+            positions: LazyFrame of positions (will be normalized)
+            weight_labels_map: {container_name: (pos_weight_labels, lt_weight_labels)}
+            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
+            lookthroughs: Optional LazyFrame of lookthroughs
+            effective_date: For DB reference joins (if rules need reference data)
+            custom_perspective_rules: Optional {pid: {rules: [...]}} dict
+            system_version_timestamp: Optional timestamp for temporal DB queries
+            return_raw_dataframes: If True, return raw DataFrames instead of formatted output
+
+        Returns:
+            Dict with perspective_configurations, or raw DataFrames dict if return_raw_dataframes=True
+        """
+        engine = PerspectiveEngine(
+            self._connection_string,
+            system_version_timestamp
+        )
+        return engine.process_dataframes(
+            positions_lf=positions,
+            weight_labels_map=weight_labels_map,
+            perspective_configs=perspective_configs,
+            lookthroughs_lf=lookthroughs,
+            effective_date=effective_date,
+            custom_perspective_rules=custom_perspective_rules,
+            return_raw_dataframes=return_raw_dataframes
         )
 
     def get_requirements(self, request: Dict) -> Dict[str, list]:

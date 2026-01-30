@@ -5,10 +5,10 @@ Configuration Manager - Manages rules, modifiers, and perspective configurations
 import json
 from typing import Dict, List, Optional
 
-from ..models.rule import Rule
-from ..models.modifier import Modifier
-from ..utils.supported_modifiers import SUPPORTED_MODIFIERS, DEFAULT_MODIFIERS
-from ..database.loaders.database_loader import DatabaseLoader, DatabaseLoadError
+from perspective_service.models.rule import Rule
+from perspective_service.models.modifier import Modifier
+from perspective_service.utils.supported_modifiers import SUPPORTED_MODIFIERS, DEFAULT_MODIFIERS
+from perspective_service.database.loaders.database_loader import DatabaseLoader, DatabaseLoadError
 
 
 class ConfigurationManager:

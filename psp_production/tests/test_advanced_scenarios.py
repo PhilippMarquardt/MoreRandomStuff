@@ -18,8 +18,7 @@ import io
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 
-# Fix encoding for Windows console
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+# Note: sys.stdout encoding fix removed as it causes pytest issues
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from perspective_service.core.engine import PerspectiveEngine
@@ -61,8 +60,7 @@ def test_rule_result_preprocess_group_savior():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "test_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_a": {
                     "instrument_id": 1,
@@ -142,9 +140,6 @@ def test_rule_result_preprocess_group_savior():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -157,7 +152,7 @@ def test_rule_result_preprocess_group_savior():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("test_container", {})
+        .get("holding", {})
     )
     positions = container_data.get("positions", {})
     kept = set(positions.keys())
@@ -204,8 +199,7 @@ def test_rule_result_preprocess_group_savior_multiple_groups():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "test_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 # Group 100: A removed by preproc, B fails -> B NOT saved
                 "pos_a": {"instrument_id": 1, "sub_portfolio_id": 100, "initial_weight": 0.10,
@@ -269,9 +263,6 @@ def test_rule_result_preprocess_group_savior_multiple_groups():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["exclude_flagged", "trade_savior"]}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -283,7 +274,7 @@ def test_rule_result_preprocess_group_savior_multiple_groups():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("test_container", {})
+        .get("holding", {})
     )
     kept = set(container_data.get("positions", {}).keys())
 
@@ -341,8 +332,7 @@ def test_rule_result_notin_or_savior():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "test_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_a": {"instrument_id": 1, "sub_portfolio_id": 100, "initial_weight": 0.25,
                           "simulated_trade_id": 100, "filter_a": True},
@@ -388,9 +378,6 @@ def test_rule_result_notin_or_savior():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["save_orphan_groups"]}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -402,7 +389,7 @@ def test_rule_result_notin_or_savior():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("test_container", {})
+        .get("holding", {})
     )
     kept = set(container_data.get("positions", {}).keys())
 
@@ -455,8 +442,7 @@ def test_preprocess_propagation_to_lookthroughs():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "test_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -520,9 +506,6 @@ def test_preprocess_propagation_to_lookthroughs():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["exclude_flagged"]}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -534,7 +517,7 @@ def test_preprocess_propagation_to_lookthroughs():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("test_container", {})
+        .get("holding", {})
     )
 
     positions = container_data.get("positions", {})
@@ -585,8 +568,7 @@ def test_preprocess_shared_parent():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "test_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -655,9 +637,6 @@ def test_preprocess_shared_parent():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["exclude_flagged"]}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -669,7 +648,7 @@ def test_preprocess_shared_parent():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("test_container", {})
+        .get("holding", {})
     )
 
     positions = container_data.get("positions", {})
@@ -712,15 +691,16 @@ def test_filter_positions_only():
     """
     Test apply_to scoping with container types.
 
-    NOTE: In PSP, apply_to compares against the container's position_type
-    (e.g., 'holding', 'benchmark'), NOT 'position' vs 'lookthrough' within a container.
+    NOTE: In PSP, apply_to compares against the container name:
+    - 'holding' -> only applies to container named 'holding'
+    - 'reference' -> applies to all non-holding containers
 
     This test verifies that a filter with apply_to='holding' affects only
-    the holding container, while a benchmark container is unaffected.
+    the holding container, while a reference container is unaffected.
 
     Scenario:
-    - holding_container: filter applies -> pos_1 fails, pos_2 passes
-    - benchmark_container: filter doesn't apply -> both kept
+    - holding: filter applies -> pos_1 fails, pos_2 passes
+    - reference: filter doesn't apply -> both kept
     """
     print("\n" + "=" * 90)
     print("TEST: apply_to='holding' - Filter holding container only")
@@ -729,8 +709,7 @@ def test_filter_positions_only():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "holding_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -764,8 +743,7 @@ def test_filter_positions_only():
                 },
             },
         },
-        "benchmark_container": {
-            "position_type": "benchmark",  # Different position_type
+        "reference": {
             "positions": {
                 "bench_1": {
                     "instrument_id": 3,
@@ -790,7 +768,7 @@ def test_filter_positions_only():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_holding_only",
-            apply_to="holding",  # Only affects containers with position_type='holding'
+            apply_to="holding",  # Only affects container named 'holding'
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -802,9 +780,6 @@ def test_filter_positions_only():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -816,14 +791,14 @@ def test_filter_positions_only():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("holding_container", {})
+        .get("holding", {})
     )
 
     bench_data = (
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("benchmark_container", {})
+        .get("reference", {})
     )
 
     kept_positions = set(holding_data.get("positions", {}).keys())
@@ -864,30 +839,27 @@ def test_filter_positions_only():
 
 def test_filter_lookthroughs_only():
     """
-    Test apply_to scoping with container types (position_type='lookthrough').
+    Test apply_to='reference' scoping (filters non-holding containers).
 
-    IMPORTANT: In PSP, apply_to compares against the container's position_type,
-    NOT 'position' vs 'lookthrough' rows within a container.
+    In PSP, apply_to compares against the container name:
+    - 'holding' -> only applies to container named 'holding'
+    - 'reference' (or any other value) -> applies to all non-holding containers
 
-    This test verifies that a filter with apply_to='lookthrough' affects only
-    containers whose position_type='lookthrough', while 'holding' containers pass.
-
-    NOTE: This does NOT test filtering LT rows within a holding container -
-    that's not possible via apply_to. All rows in a container share the same position_type.
+    This test verifies that a filter with apply_to='reference' affects only
+    non-holding containers, while the 'holding' container passes through.
 
     Scenario:
-    - holding_container (position_type='holding'): filter doesn't apply -> all kept
-    - lookthrough_container (position_type='lookthrough'): filter applies -> filtered
+    - holding: filter doesn't apply -> all kept
+    - selected_reference: filter applies -> filtered
     """
     print("\n" + "=" * 90)
-    print("TEST: apply_to='lookthrough' - Filter containers with position_type='lookthrough'")
+    print("TEST: apply_to='reference' - Filter non-holding containers")
     print("=" * 90)
 
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "holding_container": {
-            "position_type": "holding",  # This is what apply_to compares against
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -903,8 +875,7 @@ def test_filter_lookthroughs_only():
                 },
             },
         },
-        "lookthrough_container": {
-            "position_type": "lookthrough",  # apply_to='lookthrough' should match this
+        "selected_reference": {
             "positions": {
                 "lt_pos_1": {
                     "instrument_id": 3,
@@ -927,8 +898,8 @@ def test_filter_lookthroughs_only():
 
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
-            name="filter_lookthrough_only",
-            apply_to="lookthrough",  # Only affects containers with position_type='lookthrough'
+            name="filter_reference_only",
+            apply_to="reference",  # Only affects non-holding containers
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -940,9 +911,6 @@ def test_filter_lookthroughs_only():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -954,14 +922,14 @@ def test_filter_lookthroughs_only():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("holding_container", {})
+        .get("holding", {})
     )
 
     lt_data = (
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("lookthrough_container", {})
+        .get("selected_reference", {})
     )
 
     holding_kept = set(holding_data.get("positions", {}).keys())
@@ -1003,8 +971,7 @@ def test_preprocess_positions_only():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "holding_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -1020,8 +987,7 @@ def test_preprocess_positions_only():
                 },
             },
         },
-        "benchmark_container": {
-            "position_type": "benchmark",  # Different position_type
+        "reference": {
             "positions": {
                 "bench_1": {
                     "instrument_id": 3,
@@ -1066,9 +1032,6 @@ def test_preprocess_positions_only():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["exclude_flagged"]}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -1080,14 +1043,14 @@ def test_preprocess_positions_only():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("holding_container", {})
+        .get("holding", {})
     )
 
     bench_data = (
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("benchmark_container", {})
+        .get("reference", {})
     )
 
     holding_kept = set(holding_data.get("positions", {}).keys())
@@ -1127,8 +1090,7 @@ def test_scale_positions_only():
     input_json = {
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "holding_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -1144,8 +1106,7 @@ def test_scale_positions_only():
                 },
             },
         },
-        "benchmark_container": {
-            "position_type": "benchmark",
+        "reference": {
             "positions": {
                 "bench_1": {
                     "instrument_id": 3,
@@ -1189,9 +1150,6 @@ def test_scale_positions_only():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -1203,14 +1161,14 @@ def test_scale_positions_only():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("holding_container", {})
+        .get("holding", {})
     )
 
     bench_data = (
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("benchmark_container", {})
+        .get("reference", {})
     )
 
     holding_positions = holding_data.get("positions", {})
@@ -1282,8 +1240,7 @@ def test_multi_weight_labels():
     input_json = {
         "position_weight_labels": ["initial_weight", "resulting_weight", "initial_exposure_weight", "resulting_exposure_weight"],
         "lookthrough_weight_labels": ["weight"],
-        "holdings_container": {
-            "position_type": "holding",
+        "holding": {
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -1358,8 +1315,7 @@ def test_multi_weight_labels():
                 },
             },
         },
-        "reference_container": {
-            "position_type": "benchmark",
+        "selected_reference": {
             "positions": {
                 "ref_1": {
                     "instrument_id": 10,
@@ -1417,9 +1373,6 @@ def test_multi_weight_labels():
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): ["scale_holdings_to_100_percent"]}},
-            position_weights=["initial_weight", "resulting_weight", "initial_exposure_weight", "resulting_exposure_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -1431,14 +1384,14 @@ def test_multi_weight_labels():
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("holdings_container", {})
+        .get("holding", {})
     )
 
     ref_data = (
         output.get("perspective_configurations", {})
         .get("test_config", {})
         .get(PERSPECTIVE_ID, {})
-        .get("reference_container", {})
+        .get("selected_reference", {})
     )
 
     positions = holdings_data.get("positions", {})

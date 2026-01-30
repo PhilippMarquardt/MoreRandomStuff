@@ -1,5 +1,5 @@
 """Database loaders."""
 
-from .database_loader import DatabaseLoader, DatabaseLoadError
+from perspective_service.database.loaders.database_loader import DatabaseLoader, DatabaseLoadError
 
 __all__ = ['DatabaseLoader', 'DatabaseLoadError']

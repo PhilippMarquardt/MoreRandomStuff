@@ -8,9 +8,9 @@ Usage:
     result = service.process(input_json, perspective_configs, weights)
 """
 
-from .api import PerspectiveService
-from .config import DatabaseConfig, load_config
-from .core.engine import PerspectiveEngine
+from perspective_service.api import PerspectiveService
+from perspective_service.config import DatabaseConfig, load_config
+from perspective_service.core.engine import PerspectiveEngine
 
 __all__ = [
     'PerspectiveService',

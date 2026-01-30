@@ -469,7 +469,6 @@ def test_integration_mixed_case_custom_perspective():
             }
         },
         "holding": {
-            "position_type": "holding",
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -532,7 +531,6 @@ def test_integration_full_pipeline_no_db():
         "position_weight_labels": ["weight"],
         "lookthrough_weight_labels": ["weight"],
         "holding": {
-            "position_type": "holding",
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -553,10 +551,7 @@ def test_integration_full_pipeline_no_db():
     # Process (no DB, so reference data won't be loaded, but normalization should work)
     output = engine.process(
         input_json=input_json,
-        perspective_configs={"test": {"1": []}},
-        position_weights=["weight"],
-        lookthrough_weights=["weight"],
-        verbose=False
+        perspective_configs={"test": {"1": []}}
     )
 
     # Verify output

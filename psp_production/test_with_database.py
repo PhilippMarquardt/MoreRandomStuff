@@ -21,8 +21,6 @@ from perspective_service.core.engine import PerspectiveEngine
 def main():
     parser = argparse.ArgumentParser(description='Test perspective service with JSON input')
     parser.add_argument('input_file', help='Path to input JSON file')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Include removal summary')
-    parser.add_argument('--flatten', '-f', action='store_true', help='Flatten output')
     args = parser.parse_args()
 
     # Load config
@@ -34,8 +32,6 @@ def main():
         request = json.load(f)
 
     perspective_configs = request.get('perspective_configurations', {})
-    position_weights = request.get('position_weight_labels', ['weight'])
-    lookthrough_weights = request.get('lookthrough_weight_labels', ['weight'])
     system_version_timestamp = request.get('system_version_timestamp')
 
     # Initialize engine
@@ -52,11 +48,7 @@ def main():
 
     result = engine.process(
         input_json=request,
-        perspective_configs=perspective_configs,
-        position_weights=position_weights,
-        lookthrough_weights=lookthrough_weights,
-        verbose=args.verbose,
-        flatten_response=args.flatten
+        perspective_configs=perspective_configs
     )
 
     elapsed = perf_counter() - start

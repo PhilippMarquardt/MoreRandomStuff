@@ -14,7 +14,7 @@ required_columns format:
 - 'INSTRUMENT_CATEGORIZATION': columns from INSTRUMENT_CATEGORIZATION table
 """
 
-from .constants import INT_NULL
+from perspective_service.utils.constants import INT_NULL
 
 SUPPORTED_MODIFIERS = {
     # ==========================================================================

@@ -23,8 +23,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Set
 from collections import defaultdict
 
-# Fix encoding for Windows console
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+import pytest
+
+# Note: sys.stdout encoding fix removed as it causes pytest issues
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from perspective_service.core.engine import PerspectiveEngine
@@ -36,7 +37,7 @@ from perspective_service.models.modifier import Modifier
 # Test Data
 # =============================================================================
 
-CONTAINER = "test_container"
+CONTAINER = "holding"
 PERSPECTIVE_ID = 100
 TNA = 1_000_000.0
 
@@ -154,7 +155,6 @@ def create_test_input_json() -> Dict:
         "position_weight_labels": ["initial_weight"],
         "lookthrough_weight_labels": ["weight"],
         CONTAINER: {
-            "position_type": "holding",
             "positions": positions,
             "essential_lookthroughs": essential_lts,
         }
@@ -502,8 +502,8 @@ def verify_scenario(
 # Test Runner
 # =============================================================================
 
-def test_scenario(scenario: ModifierScenario) -> bool:
-    """Run a single test scenario."""
+def run_scenario(scenario: ModifierScenario) -> bool:
+    """Run a single test scenario (called by run_all_tests, not pytest directly)."""
     print(f"\n{'='*90}")
     print(f"TEST: {scenario.name}")
     print(f"{'='*90}")
@@ -521,9 +521,6 @@ def test_scenario(scenario: ModifierScenario) -> bool:
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -541,88 +538,90 @@ def test_scenario(scenario: ModifierScenario) -> bool:
     return ok
 
 
+# Module-level scenarios list for parametrized testing
+MODIFIER_SCENARIOS = [
+    # === No changes (baseline) ===
+    ModifierScenario("baseline"),
+
+    # === PreProcessing only ===
+    ModifierScenario("preprocess_only", has_preprocess=True),
+
+    # === Single filter ===
+    ModifierScenario("filter_a_only", has_filter_a=True),
+    ModifierScenario("filter_b_only", has_filter_b=True),
+
+    # === Two filters combined ===
+    ModifierScenario("filters_and", has_filter_a=True, has_filter_b=True, filter_combine="and"),
+    ModifierScenario("filters_or", has_filter_a=True, has_filter_b=True, filter_combine="or"),
+
+    # === PreProcessing + filter ===
+    ModifierScenario("preprocess_filter_a", has_preprocess=True, has_filter_a=True),
+
+    # === PostProcessing OR (savior) ===
+    ModifierScenario("postprocess_or_with_filter", has_filter_a=True, has_postprocess_or=True),
+
+    # === PostProcessing AND (restrictor) ===
+    ModifierScenario("postprocess_and_with_filter", has_filter_a=True, has_postprocess_and=True),
+
+    # === Full preprocess + filter + postprocess ===
+    ModifierScenario("pre_filter_post_or", has_preprocess=True, has_filter_a=True, has_postprocess_or=True),
+    ModifierScenario("pre_filter_post_and", has_preprocess=True, has_filter_a=True, has_postprocess_and=True),
+
+    # === Single scaling rule ===
+    ModifierScenario("scale_a_only", has_scale_a=True),
+    ModifierScenario("scale_b_only", has_scale_b=True),
+
+    # === Two scaling rules (multiplicative) ===
+    ModifierScenario("scale_a_and_b", has_scale_a=True, has_scale_b=True),
+
+    # === Filter + scaling ===
+    ModifierScenario("filter_a_scale_a", has_filter_a=True, has_scale_a=True),
+
+    # === Rescaling with filter ===
+    ModifierScenario("filter_rescale", has_filter_a=True, scale_holdings=True),
+
+    # === Full pipeline: preprocess + filter + postprocess + scale + rescale ===
+    ModifierScenario(
+        "full_pipeline",
+        has_preprocess=True,
+        has_filter_a=True,
+        has_postprocess_or=True,
+        has_scale_a=True,
+        scale_holdings=True,
+    ),
+
+    # === Complex: two filters OR + scale_a + scale_b + rescale ===
+    ModifierScenario(
+        "complex_filters_or_scales",
+        has_filter_a=True,
+        has_filter_b=True,
+        filter_combine="or",
+        has_scale_a=True,
+        has_scale_b=True,
+        scale_holdings=True,
+    ),
+
+    # === Complex: preprocess + two filters AND + postprocess AND + scales ===
+    ModifierScenario(
+        "complex_restrictive",
+        has_preprocess=True,
+        has_filter_a=True,
+        has_filter_b=True,
+        filter_combine="and",
+        has_postprocess_and=True,
+        has_scale_a=True,
+        has_scale_b=True,
+        scale_holdings=True,
+    ),
+]
+
+
 def run_all_tests() -> bool:
-    """Run all test scenarios."""
-    scenarios = [
-        # === No changes (baseline) ===
-        ModifierScenario("baseline"),
-
-        # === PreProcessing only ===
-        ModifierScenario("preprocess_only", has_preprocess=True),
-
-        # === Single filter ===
-        ModifierScenario("filter_a_only", has_filter_a=True),
-        ModifierScenario("filter_b_only", has_filter_b=True),
-
-        # === Two filters combined ===
-        ModifierScenario("filters_and", has_filter_a=True, has_filter_b=True, filter_combine="and"),
-        ModifierScenario("filters_or", has_filter_a=True, has_filter_b=True, filter_combine="or"),
-
-        # === PreProcessing + filter ===
-        ModifierScenario("preprocess_filter_a", has_preprocess=True, has_filter_a=True),
-
-        # === PostProcessing OR (savior) ===
-        ModifierScenario("postprocess_or_with_filter", has_filter_a=True, has_postprocess_or=True),
-
-        # === PostProcessing AND (restrictor) ===
-        ModifierScenario("postprocess_and_with_filter", has_filter_a=True, has_postprocess_and=True),
-
-        # === Full preprocess + filter + postprocess ===
-        ModifierScenario("pre_filter_post_or", has_preprocess=True, has_filter_a=True, has_postprocess_or=True),
-        ModifierScenario("pre_filter_post_and", has_preprocess=True, has_filter_a=True, has_postprocess_and=True),
-
-        # === Single scaling rule ===
-        ModifierScenario("scale_a_only", has_scale_a=True),
-        ModifierScenario("scale_b_only", has_scale_b=True),
-
-        # === Two scaling rules (multiplicative) ===
-        ModifierScenario("scale_a_and_b", has_scale_a=True, has_scale_b=True),
-
-        # === Filter + scaling ===
-        ModifierScenario("filter_a_scale_a", has_filter_a=True, has_scale_a=True),
-
-        # === Rescaling with filter ===
-        ModifierScenario("filter_rescale", has_filter_a=True, scale_holdings=True),
-
-        # === Full pipeline: preprocess + filter + postprocess + scale + rescale ===
-        ModifierScenario(
-            "full_pipeline",
-            has_preprocess=True,
-            has_filter_a=True,
-            has_postprocess_or=True,
-            has_scale_a=True,
-            scale_holdings=True,
-        ),
-
-        # === Complex: two filters OR + scale_a + scale_b + rescale ===
-        ModifierScenario(
-            "complex_filters_or_scales",
-            has_filter_a=True,
-            has_filter_b=True,
-            filter_combine="or",
-            has_scale_a=True,
-            has_scale_b=True,
-            scale_holdings=True,
-        ),
-
-        # === Complex: preprocess + two filters AND + postprocess AND + scales ===
-        ModifierScenario(
-            "complex_restrictive",
-            has_preprocess=True,
-            has_filter_a=True,
-            has_filter_b=True,
-            filter_combine="and",
-            has_postprocess_and=True,
-            has_scale_a=True,
-            has_scale_b=True,
-            scale_holdings=True,
-        ),
-    ]
-
+    """Run all test scenarios (for __main__ execution)."""
     results: List[Tuple[ModifierScenario, bool]] = []
-    for s in scenarios:
+    for s in MODIFIER_SCENARIOS:
         try:
-            results.append((s, test_scenario(s)))
+            results.append((s, run_scenario(s)))
         except Exception as e:
             print(f"  [ERROR] Exception: {e}")
             import traceback
@@ -677,9 +676,6 @@ def test_all_positions_removed() -> bool:
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
-            position_weights=["initial_weight"],
-            lookthrough_weights=["weight"],
-            verbose=False,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -730,6 +726,12 @@ def test_all_positions_removed() -> bool:
 
     print("\n  [PASS] all_positions_removed")
     return True
+
+
+@pytest.mark.parametrize("scenario", MODIFIER_SCENARIOS, ids=lambda s: s.name)
+def test_modifier_scenario(scenario: ModifierScenario):
+    """Pytest parametrized test for each modifier scenario."""
+    assert run_scenario(scenario), f"Scenario {scenario.name} failed"
 
 
 if __name__ == "__main__":

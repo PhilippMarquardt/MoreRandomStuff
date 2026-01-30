@@ -14,18 +14,18 @@ Implements the 9-step flow:
 """
 
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import polars as pl
 
-from .configuration_manager import ConfigurationManager
-from .data_ingestion import DataIngestion
-from .perspective_processor import PerspectiveProcessor
-from .output_formatter import OutputFormatter
-from .rule_evaluator import RuleEvaluator
-from ..database.loaders.database_loader import DatabaseLoader
-from ..models.rule import Rule
-from ..utils.constants import INT_NULL
+from perspective_service.core.configuration_manager import ConfigurationManager
+from perspective_service.core.data_ingestion import DataIngestion
+from perspective_service.core.perspective_processor import PerspectiveProcessor
+from perspective_service.core.output_formatter import OutputFormatter
+from perspective_service.core.rule_evaluator import RuleEvaluator
+from perspective_service.database.loaders.database_loader import DatabaseLoader
+from perspective_service.models.rule import Rule
+from perspective_service.utils.constants import INT_NULL
 
 
 class PerspectiveEngine:
@@ -55,89 +55,180 @@ class PerspectiveEngine:
     def process(self,
                 input_json: Dict,
                 perspective_configs: Dict[str, Dict[str, List[str]]],
-                position_weights: List[str],
-                lookthrough_weights: List[str],
-                verbose: bool = False,
-                flatten_response: bool = False) -> Dict:
+                return_raw_dataframes: bool = False) -> Dict:
         """
-        Process input data through perspective rules.
+        Process input data through perspective rules (JSON input path).
 
         Args:
             input_json: Raw input data containing positions and lookthroughs
             perspective_configs: {config_name: {perspective_id: [modifier_names]}}
-            position_weights: List of weight column names for positions
-            lookthrough_weights: List of weight column names for lookthroughs
-            verbose: Whether to include removal summary in output
-            flatten_response: Whether to flatten output to columnar format
+            return_raw_dataframes: If True, return raw DataFrames instead of formatted output
 
         Returns:
-            Formatted output dictionary
+            Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
         self._parse_custom_perspectives(input_json)
 
-        weight_labels_map, all_pos_weights, all_lt_weights = DataIngestion.get_weight_labels(input_json)
+        weight_labels_map = DataIngestion.get_weight_labels(input_json)
 
-        if not position_weights:
-            position_weights = all_pos_weights
-        if not lookthrough_weights:
-            lookthrough_weights = all_lt_weights
-
-        # Step 3: Determine required tables based on perspectives and modifiers
-        required_tables = self._determine_required_tables(perspective_configs)
-
-        # Step 4 & 5: Load reference data and build dataframes
+        # Build dataframes from JSON
         positions_lf, lookthroughs_lf = DataIngestion.build_dataframes(
             input_json,
-            required_tables,
-            position_weights + lookthrough_weights,
-            self.db_loader
+            weight_labels_map
         )
 
         if positions_lf.collect_schema().names() == []:
             return {"perspective_configurations": {}}
 
+        # Join reference data if needed
+        required_tables = self._determine_required_tables(perspective_configs)
+        if required_tables and self.db_loader:
+            effective_date = input_json.get('ed')
+            if not effective_date:
+                raise ValueError("Missing required field 'ed' (effective date)")
+            positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
+                positions_lf,
+                lookthroughs_lf,
+                required_tables,
+                self.db_loader,
+                self.system_version_timestamp,
+                effective_date
+            )
+
+        if positions_lf.collect_schema().names() == []:
+            return {"perspective_configurations": {}}
+
+        return self._process_core(
+            positions_lf, lookthroughs_lf, perspective_configs,
+            weight_labels_map, return_raw_dataframes
+        )
+
+    def process_dataframes(
+        self,
+        positions_lf: pl.LazyFrame,
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
+        perspective_configs: Dict[str, Dict[str, List[str]]],
+        lookthroughs_lf: Optional[pl.LazyFrame] = None,
+        effective_date: Optional[str] = None,
+        custom_perspective_rules: Optional[Dict] = None,
+        return_raw_dataframes: bool = False
+    ) -> Dict:
+        """
+        Process pre-loaded DataFrames through perspective rules.
+
+        Args:
+            positions_lf: LazyFrame of positions (will be normalized)
+            weight_labels_map: {container_name: (pos_weights, lt_weights)}
+            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
+            lookthroughs_lf: Optional LazyFrame of lookthroughs
+            effective_date: For DB reference joins (required if DB connected and rules need ref data)
+            custom_perspective_rules: Optional {pid: {rules: [...]}} dict
+            return_raw_dataframes: If True, return raw DataFrames instead of formatted output
+
+        Returns:
+            Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
+        """
+        # Parse custom perspectives if provided
+        if custom_perspective_rules:
+            self._parse_custom_perspectives({"custom_perspective_rules": custom_perspective_rules})
+
+        # Normalize provided DataFrames
+        all_pos, all_lt = DataIngestion.get_all_weights(weight_labels_map)
+        all_weights = list(set(all_pos + all_lt))
+        positions_lf, lookthroughs_lf = DataIngestion.normalize_dataframes(
+            positions_lf, lookthroughs_lf, all_weights
+        )
+
+        if positions_lf.collect_schema().names() == []:
+            return {"perspective_configurations": {}}
+
+        # Join reference data if effective_date provided and DB connected
+        if effective_date and self.db_loader:
+            required_tables = self._determine_required_tables(perspective_configs)
+            if required_tables:
+                positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
+                    positions_lf,
+                    lookthroughs_lf,
+                    required_tables,
+                    self.db_loader,
+                    self.system_version_timestamp,
+                    effective_date
+                )
+
+        if positions_lf.collect_schema().names() == []:
+            return {"perspective_configurations": {}}
+
+        return self._process_core(
+            positions_lf, lookthroughs_lf, perspective_configs,
+            weight_labels_map, return_raw_dataframes
+        )
+
+    def _process_core(
+        self,
+        positions_lf: pl.LazyFrame,
+        lookthroughs_lf: Optional[pl.LazyFrame],
+        perspective_configs: Dict[str, Dict[str, List[str]]],
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
+        return_raw_dataframes: bool = False
+    ) -> Dict:
+        """
+        Common processing core - precompute, build plan, collect, format.
+
+        Called by both process() and process_dataframes() after data preparation.
+        """
         # Get original containers before any filtering (for empty container handling)
         original_containers = positions_lf.select("container").unique().collect().to_series().to_list()
 
-        # Step 6: Precompute nested criteria values
+        # Precompute nested criteria values
         precomputed_values = self._precompute_nested_criteria(
             positions_lf, lookthroughs_lf, perspective_configs
         )
 
-        # Step 7: Build perspective plan (keep/scale expressions)
+        # Build perspective plan (keep/scale expressions)
         processor = PerspectiveProcessor(self.config)
-        positions_lf, lookthroughs_lf, metadata_map = processor.build_perspective_plan(
+        positions_lf, lookthroughs_lf, metadata_map, scale_factors_lf = processor.build_perspective_plan(
             positions_lf,
             lookthroughs_lf,
             perspective_configs,
-            position_weights,
-            lookthrough_weights,
             precomputed_values,
             weight_labels_map
         )
 
-        # Step 8: Calculate
-        if lookthroughs_lf is not None:
-            positions_df, lookthroughs_df = pl.collect_all([
-                positions_lf,
-                lookthroughs_lf
-            ])
-        else:
-            positions_df = positions_lf.collect()
-            lookthroughs_df = pl.DataFrame()
+        # Return raw DataFrames if requested
+        if return_raw_dataframes:
+            return {
+                "positions": positions_lf,
+                "lookthroughs": lookthroughs_lf,
+                "scale_factors": scale_factors_lf,
+                "metadata_map": metadata_map
+            }
+        
+        # Collect all
+        to_collect = [positions_lf]
+        has_lt = lookthroughs_lf is not None
+        has_sf = scale_factors_lf is not None
 
-        # Step 9: Format output
+        if has_lt:
+            to_collect.append(lookthroughs_lf)
+        if has_sf:
+            to_collect.append(scale_factors_lf)
+
+        collected = pl.collect_all(to_collect)
+
+        positions_df = collected[0]
+        lookthroughs_df = collected[1] if has_lt else pl.DataFrame()
+        scale_factors_df = collected[-1] if has_sf else None
+
+
+        # Format output
         return OutputFormatter.format_output(
             positions_df,
             lookthroughs_df,
             metadata_map,
-            position_weights,
-            lookthrough_weights,
-            verbose,
-            flatten_response,
             weight_labels_map,
             perspective_configs,
-            original_containers
+            original_containers,
+            scale_factors_df
         )
 
     def _determine_required_tables(self,

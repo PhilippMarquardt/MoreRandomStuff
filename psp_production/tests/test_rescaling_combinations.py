@@ -34,8 +34,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, DefaultDict
 from collections import defaultdict
 
-# Fix encoding for Windows console
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+import pytest
+
+# Note: sys.stdout encoding fix removed as it causes pytest issues
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from perspective_service.core.engine import PerspectiveEngine
@@ -72,7 +73,7 @@ class TestScenario:
 # Test Data (single container, single weight label)
 # =============================================================================
 
-CONTAINER = "test_container"
+CONTAINER = "holding"
 PERSPECTIVE_ID = 100
 TNA = 1_000_000.0
 
@@ -98,7 +99,6 @@ def create_test_input_json(container_name: str = CONTAINER) -> Dict:
         "position_weight_labels": ["initial_exposure_weight"],
         "lookthrough_weight_labels": ["weight"],
         container_name: {
-            "position_type": "holding",
             "positions": {
                 "pos_1": {
                     "instrument_id": 1,
@@ -588,7 +588,8 @@ def verify_world_a(
 # Runner
 # =============================================================================
 
-def test_scenario(scenario: TestScenario) -> bool:
+def run_scenario(scenario: TestScenario) -> bool:
+    """Run a single test scenario (called by run_all_tests, not pytest directly)."""
     print("\n" + "=" * 90)
     print(f"TEST: {scenario}")
     print("=" * 90)
@@ -601,9 +602,6 @@ def test_scenario(scenario: TestScenario) -> bool:
         output = engine.process(
             input_json=input_json,
             perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-            position_weights=["initial_exposure_weight"],
-            lookthrough_weights=["weight"],
-            verbose=True,
         )
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
@@ -618,39 +616,42 @@ def test_scenario(scenario: TestScenario) -> bool:
     return ok
 
 
+# Module-level scenarios list for parametrized testing
+RESCALING_SCENARIOS = [
+    # No changes
+    TestScenario("no_changes", False, False, False, False),
+
+    # Single feature
+    TestScenario("filter_only", True, False, False, False),
+    TestScenario("scale_rule_only", False, True, False, False),
+    TestScenario("rescale_holdings_only", False, False, True, False),
+    TestScenario("rescale_lt_only", False, False, False, True),
+
+    # Two features
+    TestScenario("filter+scale", True, True, False, False),
+    TestScenario("filter+rescale_hold", True, False, True, False),
+    TestScenario("filter+rescale_lt", True, False, False, True),
+    TestScenario("scale+rescale_hold", False, True, True, False),
+    TestScenario("scale+rescale_lt", False, True, False, True),
+    TestScenario("rescale_hold+lt", False, False, True, True),
+
+    # Three features
+    TestScenario("filter+scale+rescale_hold", True, True, True, False),
+    TestScenario("filter+scale+rescale_lt", True, True, False, True),
+    TestScenario("filter+rescale_hold+lt", True, False, True, True),
+    TestScenario("scale+rescale_hold+lt", False, True, True, True),
+
+    # All features
+    TestScenario("all_features", True, True, True, True),
+]
+
+
 def run_all_tests() -> bool:
-    scenarios = [
-        # No changes
-        TestScenario("no_changes", False, False, False, False),
-
-        # Single feature
-        TestScenario("filter_only", True, False, False, False),
-        TestScenario("scale_rule_only", False, True, False, False),
-        TestScenario("rescale_holdings_only", False, False, True, False),
-        TestScenario("rescale_lt_only", False, False, False, True),
-
-        # Two features
-        TestScenario("filter+scale", True, True, False, False),
-        TestScenario("filter+rescale_hold", True, False, True, False),
-        TestScenario("filter+rescale_lt", True, False, False, True),
-        TestScenario("scale+rescale_hold", False, True, True, False),
-        TestScenario("scale+rescale_lt", False, True, False, True),
-        TestScenario("rescale_hold+lt", False, False, True, True),
-
-        # Three features
-        TestScenario("filter+scale+rescale_hold", True, True, True, False),
-        TestScenario("filter+scale+rescale_lt", True, True, False, True),
-        TestScenario("filter+rescale_hold+lt", True, False, True, True),
-        TestScenario("scale+rescale_hold+lt", False, True, True, True),
-
-        # All features
-        TestScenario("all_features", True, True, True, True),
-    ]
-
+    """Run all test scenarios (for __main__ execution)."""
     results: List[Tuple[TestScenario, bool]] = []
-    for s in scenarios:
+    for s in RESCALING_SCENARIOS:
         try:
-            results.append((s, test_scenario(s)))
+            results.append((s, run_scenario(s)))
         except Exception as e:
             print(f"  [ERROR] Exception in scenario {s}: {e}")
             import traceback
@@ -667,6 +668,12 @@ def run_all_tests() -> bool:
     print(f"\n  Total: {passed}/{len(results)} passed")
 
     return passed == len(results)
+
+
+@pytest.mark.parametrize("scenario", RESCALING_SCENARIOS, ids=lambda s: s.name)
+def test_rescaling_scenario(scenario: TestScenario):
+    """Pytest parametrized test for each rescaling scenario."""
+    assert run_scenario(scenario), f"Scenario {scenario.name} failed"
 
 
 if __name__ == "__main__":

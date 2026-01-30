@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 class Rule:
     """Represents a single filtering or scaling rule."""
     name: str
-    apply_to: str  # 'position', 'lookthrough', or 'both'
+    apply_to: str  # 'holding', 'reference', or 'both'
     criteria: Optional[Dict[str, Any]] = None
     condition_for_next_rule: Optional[str] = None  # 'And' or 'Or'
     is_scaling_rule: bool = False

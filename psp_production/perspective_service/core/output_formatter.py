@@ -14,26 +14,40 @@ class OutputFormatter:
     def format_output(positions_df: pl.DataFrame,
                       lookthroughs_df: pl.DataFrame,
                       metadata_map: Dict,
-                      position_weights: List[str],
-                      lookthrough_weights: List[str],
-                      verbose: bool,
-                      flatten_response: bool = False,
                       weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
                       perspective_configs: Optional[Dict] = None,
-                      original_containers: Optional[List[str]] = None) -> Dict:
+                      original_containers: Optional[List[str]] = None,
+                      scale_factors_df: Optional[pl.DataFrame] = None) -> Dict:
         """Format processed dataframes into structured output.
 
         Args:
-            weight_labels_map: Optional per-container weight labels mapping
+            weight_labels_map: Per-container weight labels mapping
                 {container_name: (pos_weight_labels, lt_weight_labels)}
             perspective_configs: {config_name: {perspective_id: [modifier_names]}}
                 Used to determine which perspectives have rescaling enabled.
             original_containers: List of container names from input (for empty container handling)
+            scale_factors_df: DataFrame with scale factors from Processor (or None if no rescaling)
         """
         if not metadata_map:
             return {"perspective_configurations": {}}
 
         results = OutputFormatter._initialize_results(metadata_map)
+
+        # Compute union of weights from weight_labels_map
+        position_weights = []
+        lookthrough_weights = []
+        if weight_labels_map:
+            pos_set = set()
+            lt_set = set()
+            for _, (pw, lw) in weight_labels_map.items():
+                for w in (pw or []):
+                    if w not in pos_set:
+                        position_weights.append(w)
+                        pos_set.add(w)
+                for w in (lw or []):
+                    if w not in lt_set:
+                        lookthrough_weights.append(w)
+                        lt_set.add(w)
 
         # Get factor columns once
         factor_columns = [
@@ -67,41 +81,15 @@ class OutputFormatter:
                 weight_labels_map
             )
 
-        # Scale factors are ALWAYS computed
-        OutputFormatter._add_scale_factors(
-            positions_df,
-            lookthroughs_df,
-            metadata_map,
-            factor_columns,
-            position_weights,
+        # Populate scale factors from DataFrame or default to 1.0
+        OutputFormatter._populate_scale_factors_from_df(
+            scale_factors_df,
             results,
             weight_labels_map,
-            perspective_configs
+            metadata_map,
+            positions_df,
+            position_weights
         )
-
-        # =============================================================================
-        # LEGACY COMPATIBILITY: Remove this block when caller is adjusted
-        # =============================================================================
-        # When all positions are filtered out, legacy expects:
-        # - Container key still present in output
-        # - "positions": None (explicitly null, not missing)
-        # - "scale_factors": already set to 1.0 by _add_scale_factors (no impact since no positions)
-        #
-        # TODO: Remove this block once callers are updated to handle missing containers.
-        # =============================================================================
-        if original_containers:
-            for config_name, perspective_map in results.items():
-                for perspective_id in perspective_map:
-                    for container in original_containers:
-                        container_data = results[config_name][perspective_id].get(container, {})
-                        if "positions" not in container_data:
-                            if container not in results[config_name][perspective_id]:
-                                results[config_name][perspective_id][container] = {}
-                            results[config_name][perspective_id][container]["positions"] = None
-
-        # Flatten response if requested
-        if flatten_response:
-            OutputFormatter._flatten_results(results)
 
         return {"perspective_configurations": results}
 
@@ -270,34 +258,23 @@ class OutputFormatter:
         return dict(zip(ids, structs))
 
     @staticmethod
-    def _add_scale_factors(positions_df: pl.DataFrame,
-                           lookthroughs_df: pl.DataFrame,
-                           metadata_map: Dict,
-                           factor_columns: List[str],
-                           position_weights: List[str],
-                           results: Dict,
-                           weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
-                           perspective_configs: Optional[Dict] = None):
+    def _populate_scale_factors_from_df(
+        scale_factors_df: Optional[pl.DataFrame],
+        results: Dict,
+        weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]],
+        metadata_map: Dict,
+        positions_df: pl.DataFrame,
+        position_weights: List[str]
+    ):
         """
-        Compute portfolio "kept fraction" per container, per perspective, per weight label.
+        Populate scale_factors in results from DataFrame or default to 1.0.
 
-        This is the value you want for TNA attribution:
-            notional_i = TNA * output_weight_i * kept_fraction
-
-        kept_fraction is ALWAYS correct (normalizes even if raw weights don't sum to 1):
-            kept_fraction = (sum of kept positions + sum of kept essential LT) /
-                           (sum of all positions + sum of all essential LT)
-
-        IMPORTANT:
-        - Includes essential lookthroughs in the universe (for exposure labels where they contribute).
-        - Uses RAW/UNCHANGED weight columns.
-        - Scale factor is 1.0 when scale_holdings_to_100_percent is NOT enabled for the perspective.
+        When scale_factors_df is None (no rescaling enabled):
+            scale_factors = {w: 1.0 for w in container_weights}
+        When scale_factors_df is provided:
+            Extract values from DataFrame rows
         """
         if positions_df.is_empty():
-            return
-
-        available_factors = [c for c in factor_columns if c in positions_df.columns]
-        if not available_factors:
             return
 
         # Build full set of possible position weight labels (global + per-container)
@@ -310,209 +287,41 @@ class OutputFormatter:
         if not valid_weights:
             return
 
-        # Extract essential lookthroughs (if any)
-        elt_df = pl.DataFrame()
-        if lookthroughs_df is not None and not lookthroughs_df.is_empty() and "record_type" in lookthroughs_df.columns:
-            elt_df = lookthroughs_df.filter(pl.col("record_type") == "essential_lookthroughs")
+        # Get unique containers
+        containers = positions_df.select("container").unique().to_series().to_list()
 
-        # Determine which weights exist on essential LT
-        elt_weights = [w for w in valid_weights if not elt_df.is_empty() and w in elt_df.columns]
+        # Build lookup from scale_factors_df if provided
+        sf_lookup = {}  # (config, pid, container, weight_label) -> scale_factor
+        if scale_factors_df is not None and not scale_factors_df.is_empty():
+            for row in scale_factors_df.iter_rows(named=True):
+                key = (row["config"], row["perspective_id"], str(row["container"]), row["weight_label"])
+                sf_lookup[key] = row["scale_factor"]
 
-        # -------------------------
-        # Compute TOTAL denominators per container (positions + essential LT)
-        # -------------------------
-        tot_pos = (
-            positions_df
-            .group_by("container")
-            .agg([pl.col(w).sum().alias(f"__totpos__{w}") for w in valid_weights])
-        )
-
-        if elt_weights and not elt_df.is_empty():
-            tot_elt = (
-                elt_df
-                .group_by("container")
-                .agg([pl.col(w).sum().alias(f"__totelt__{w}") for w in elt_weights])
-            )
-            total_denoms = tot_pos.join(tot_elt, on="container", how="left")
-            # Combine: total = positions + essential LT (for weights that exist on both)
-            combine_exprs = []
-            for w in valid_weights:
-                if w in elt_weights:
-                    combine_exprs.append(
-                        (pl.col(f"__totpos__{w}") + pl.col(f"__totelt__{w}").fill_null(0.0)).alias(f"__tot__{w}")
-                    )
-                else:
-                    combine_exprs.append(pl.col(f"__totpos__{w}").alias(f"__tot__{w}"))
-            total_denoms = total_denoms.with_columns(combine_exprs)
-        else:
-            total_denoms = tot_pos.with_columns([
-                pl.col(f"__totpos__{w}").alias(f"__tot__{w}") for w in valid_weights
-            ])
-
-        # Process each perspective
+        # Populate scale_factors for each config/perspective/container
         for config_name, perspective_map in metadata_map.items():
-            for perspective_id, col_name in perspective_map.items():
-                if col_name not in positions_df.columns:
-                    continue
-
-                # Check if scale_holdings_to_100_percent is enabled for this perspective
-                # If not, SF = 1.0 for all weights
-                rescaling_enabled = False
-                if perspective_configs:
-                    # perspective_configs uses string keys for perspective IDs
-                    modifiers = perspective_configs.get(config_name, {}).get(str(perspective_id), []) or []
-                    rescaling_enabled = "scale_holdings_to_100_percent" in modifiers
-
-                if not rescaling_enabled:
-                    # No rescaling: SF = 1.0 for all weight labels
-                    # Get unique containers from positions
-                    containers = positions_df.select("container").unique().to_series().to_list()
-                    for container in containers:
-                        # Container-specific weights if provided
-                        if weight_labels_map and container in weight_labels_map:
-                            container_weights, _ = weight_labels_map[container]
-                            output_weights = [w for w in (container_weights or []) if w in valid_weights]
-                        else:
-                            output_weights = valid_weights
-
-                        kept_fraction = {w: 1.0 for w in output_weights}
-                        if kept_fraction:
-                            perspective_target = results[config_name][perspective_id]
-                            if container not in perspective_target:
-                                perspective_target[container] = {}
-                            perspective_target[container]["scale_factors"] = kept_fraction
-                    continue
-
-                # -------------------------
-                # Compute KEPT numerators using w * fcol (World A: scaling affects economic mass)
-                # This must match how rescaling denom is computed for consistency
-                # -------------------------
-                kept_pos = positions_df.filter(pl.col(col_name).is_not_null())
-                if kept_pos.is_empty():
-                    continue
-
-                # Use w * fcol for kept mass (not raw w)
-                keep_pos_nums = (
-                    kept_pos
-                    .group_by("container")
-                    .agg([(pl.col(w) * pl.col(col_name)).sum().alias(f"__keeppos__{w}") for w in valid_weights])
-                )
-
-                # Include kept essential LT if col_name exists on lookthroughs
-                if elt_weights and not elt_df.is_empty() and col_name in elt_df.columns:
-                    kept_elt = elt_df.filter(pl.col(col_name).is_not_null())
-                    if not kept_elt.is_empty():
-                        # Use w * fcol for ELT too (ELT has its own factor, not inherited from parent)
-                        keep_elt_nums = (
-                            kept_elt
-                            .group_by("container")
-                            .agg([(pl.col(w) * pl.col(col_name)).sum().alias(f"__keepelt__{w}") for w in elt_weights])
-                        )
-                        keep_nums = keep_pos_nums.join(keep_elt_nums, on="container", how="left")
-                        # Combine: kept = positions + essential LT
-                        combine_exprs = []
-                        for w in valid_weights:
-                            if w in elt_weights:
-                                combine_exprs.append(
-                                    (pl.col(f"__keeppos__{w}") + pl.col(f"__keepelt__{w}").fill_null(0.0)).alias(f"__keep__{w}")
-                                )
-                            else:
-                                combine_exprs.append(pl.col(f"__keeppos__{w}").alias(f"__keep__{w}"))
-                        keep_nums = keep_nums.with_columns(combine_exprs)
-                    else:
-                        keep_nums = keep_pos_nums.with_columns([
-                            pl.col(f"__keeppos__{w}").alias(f"__keep__{w}") for w in valid_weights
-                        ])
-                else:
-                    keep_nums = keep_pos_nums.with_columns([
-                        pl.col(f"__keeppos__{w}").alias(f"__keep__{w}") for w in valid_weights
-                    ])
-
-                # Join totals and compute kept_fraction = keep / total (guard total=0)
-                joined = keep_nums.join(total_denoms, on="container", how="left")
-
-                for row in joined.iter_rows(named=True):
-                    container = row["container"]
-
-                    # Container-specific weights if provided
+            for perspective_id in perspective_map:
+                for container in containers:
+                    # Determine which weights to include
                     if weight_labels_map and container in weight_labels_map:
                         container_weights, _ = weight_labels_map[container]
                         output_weights = [w for w in (container_weights or []) if w in valid_weights]
                     else:
                         output_weights = valid_weights
 
+                    # Build scale_factors dict
                     kept_fraction = {}
                     for w in output_weights:
-                        num = row.get(f"__keep__{w}")
-                        den = row.get(f"__tot__{w}")
-
-                        if den is None or den == 0:
-                            continue
-                        if num is None:
-                            num = 0.0
-
-                        kept_fraction[w] = num / den
+                        key = (config_name, perspective_id, str(container), w)
+                        if key in sf_lookup:
+                            sf = sf_lookup[key]
+                            if sf is not None:
+                                kept_fraction[w] = sf
+                        else:
+                            # Default to 1.0 when no rescaling
+                            kept_fraction[w] = 1.0
 
                     if kept_fraction:
                         perspective_target = results[config_name][perspective_id]
                         if container not in perspective_target:
                             perspective_target[container] = {}
-                        # keep the key name you already use downstream
                         perspective_target[container]["scale_factors"] = kept_fraction
-
-    @staticmethod
-    def _flatten_results(results: Dict) -> None:
-        """
-        Flatten positions and lookthroughs from row-based to columnar format.
-
-        Converts from:
-            {"positions": {"123": {"weight": 0.5}, "456": {"weight": 0.2}}}
-        To:
-            {"positions": {"identifier": [123, 456], "weight": [0.5, 0.2]}}
-        """
-        for config_name, perspectives in results.items():
-            for perspective_id, containers in perspectives.items():
-                for container_name, container_data in containers.items():
-                    # Flatten positions
-                    if "positions" in container_data:
-                        container_data["positions"] = OutputFormatter._flatten_entries(
-                            container_data["positions"]
-                        )
-
-                    # Flatten all lookthrough types
-                    for key in list(container_data.keys()):
-                        if "lookthrough" in key:
-                            container_data[key] = OutputFormatter._flatten_entries(
-                                container_data[key]
-                            )
-
-    @staticmethod
-    def _flatten_entries(entries: Dict) -> Dict:
-        """
-        Convert row-based dict to columnar format.
-
-        Input:  {"123": {"weight": 0.5, "exposure": 0.3}, "456": {"weight": 0.2, "exposure": 0.1}}
-        Output: {"identifier": [123, 456], "weight": [0.5, 0.2], "exposure": [0.3, 0.1]}
-        """
-        if not entries:
-            return {"identifier": []}
-
-        processed = {"identifier": []}
-
-        for entry_id, entry_data in entries.items():
-            # Try to convert identifier to int, otherwise keep as string
-            try:
-                processed["identifier"].append(int(entry_id))
-            except (ValueError, TypeError):
-                processed["identifier"].append(entry_id)
-
-            # Add each property value to its column
-            for key, value in entry_data.items():
-                if key not in processed:
-                    processed[key] = []
-                # Round floats to 13 decimal places (matching original)
-                if isinstance(value, float):
-                    value = round(value, 13)
-                processed[key].append(value)
-
-        return processed

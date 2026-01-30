@@ -6,8 +6,9 @@ from typing import Dict, List, Tuple, Optional
 
 import polars as pl
 
-from .configuration_manager import ConfigurationManager
-from .rule_evaluator import RuleEvaluator
+from perspective_service.core.configuration_manager import ConfigurationManager
+from perspective_service.core.rule_evaluator import RuleEvaluator
+from perspective_service.models.enums import Container, RecordType, ApplyTo
 
 
 class PerspectiveProcessor:
@@ -20,15 +21,13 @@ class PerspectiveProcessor:
                                positions_lf: pl.LazyFrame,
                                lookthroughs_lf: pl.LazyFrame,
                                perspective_configs: Dict,
-                               position_weights: List[str],
-                               lookthrough_weights: List[str],
                                precomputed_values: Dict,
-                               weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Dict]:
+                               weight_labels_map: Dict[str, Tuple[List[str], List[str]]]) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Dict, Optional[pl.LazyFrame]]:
         """
         Build execution plan for all perspectives.
 
         Returns:
-            Tuple of (processed_positions, processed_lookthroughs, metadata_map)
+            Tuple of (processed_positions, processed_lookthroughs, metadata_map, scale_factors_lf)
         """
         # Initialize collections for expressions
         factor_expressions_pos = []
@@ -92,102 +91,29 @@ class PerspectiveProcessor:
             lookthroughs_lf,
             perspective_configs,
             metadata_map,
-            position_weights,
-            lookthrough_weights,
             has_lookthroughs,
             precomputed_values,
             weight_labels_map
         )
 
-        # -------------------------
-        # Compute final weight columns in the Processor
-        # {w}_{config}_{pid} = w * factor_used
-        # factor_used = fcol (no rescale) OR f"{fcol}_factors".struct.field(w) (rescaled)
-        # -------------------------
+        # Build weight columns (extracted to helper)
+        positions_lf, lookthroughs_lf = self._build_weight_columns(
+            positions_lf,
+            lookthroughs_lf,
+            metadata_map,
+            weight_labels_map
+        )
 
-        # Factor columns from metadata_map (f_{config}_{pid})
-        factor_cols = [c for pmap in metadata_map.values() for c in pmap.values()]
+        # Build scale factors
+        scale_factors_lf = self._build_scale_factors(
+            positions_lf,
+            lookthroughs_lf,
+            perspective_configs,
+            metadata_map,
+            weight_labels_map
+        )
 
-        # Resolve valid weight labels once (global + per-container labels)
-        pos_schema = set(positions_lf.collect_schema().names())
-
-        pos_weights_set = set(position_weights)
-        ordered_pos_weights = list(position_weights)  
-
-        lt_weights_set = set(lookthrough_weights)
-        ordered_lt_weights = list(lookthrough_weights)
-
-        if weight_labels_map:
-            for _, (pw, lw) in weight_labels_map.items():
-                for w in (pw or []):
-                    if w not in pos_weights_set:
-                        ordered_pos_weights.append(w)
-                        pos_weights_set.add(w)
-                for w in (lw or []):
-                    if w not in lt_weights_set:
-                        ordered_lt_weights.append(w)
-                        lt_weights_set.add(w)
-
-        # Filter by schema membership 
-        pos_weights_valid = [w for w in ordered_pos_weights if w in pos_schema]
-
-        # Build expressions for positions
-        pos_weight_exprs: List[pl.Expr] = []
-        for fcol in factor_cols:
-            if fcol not in pos_schema:
-                continue
-
-            suffix = fcol[2:]  # "config_pid"
-            factors_col = f"{fcol}_factors"
-            has_struct = factors_col in pos_schema
-
-            for w in pos_weights_valid:
-                if has_struct:
-                    factor_used = pl.col(factors_col).struct.field(w)
-                else:
-                    factor_used = pl.col(fcol)
-
-                pos_weight_exprs.append(
-                    pl.when(pl.col(fcol).is_not_null())
-                    .then(pl.col(w) * factor_used)
-                    .otherwise(pl.lit(None))
-                    .alias(f"{w}_{suffix}")
-                )
-
-        if pos_weight_exprs:
-            positions_lf = positions_lf.with_columns(pos_weight_exprs)
-
-        # Lookthroughs (if present)
-        if has_lookthroughs and lookthroughs_lf is not None:
-            lt_schema = set(lookthroughs_lf.collect_schema().names())
-            lt_weights_valid = [w for w in ordered_lt_weights if w in lt_schema]
-
-            lt_weight_exprs: List[pl.Expr] = []
-            for fcol in factor_cols:
-                if fcol not in lt_schema:
-                    continue
-
-                suffix = fcol[2:]
-                factors_col = f"{fcol}_factors"
-                has_struct = factors_col in lt_schema
-
-                for w in lt_weights_valid:
-                    if has_struct:
-                        factor_used = pl.col(factors_col).struct.field(w)
-                    else:
-                        factor_used = pl.col(fcol)
-
-                    lt_weight_exprs.append(
-                        pl.when(pl.col(fcol).is_not_null())
-                        .then(pl.col(w) * factor_used)
-                        .otherwise(pl.lit(None))
-                        .alias(f"{w}_{suffix}")
-                    )
-
-            if lt_weight_exprs:
-                lookthroughs_lf = lookthroughs_lf.with_columns(lt_weight_exprs)
-
-        return positions_lf, lookthroughs_lf if has_lookthroughs else None, metadata_map
+        return positions_lf, lookthroughs_lf if has_lookthroughs else None, metadata_map, scale_factors_lf
 
     def _build_keep_expression(self,
                                perspective_id: int,
@@ -323,17 +249,15 @@ class PerspectiveProcessor:
         return result
 
     def _apply_rescaling(
-    self,
-    positions_lf: pl.LazyFrame,
-    lookthroughs_lf: Optional[pl.LazyFrame],
-    perspective_configs: Dict,
-    metadata_map: Dict,
-    position_weights: List[str],
-    lookthrough_weights: List[str],
-    has_lookthroughs: bool,
-    precomputed_values: Dict,
-    weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
-) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame]]:
+        self,
+        positions_lf: pl.LazyFrame,
+        lookthroughs_lf: Optional[pl.LazyFrame],
+        perspective_configs: Dict,
+        metadata_map: Dict,
+        has_lookthroughs: bool,
+        precomputed_values: Dict,
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
+    ) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame]]:
         """
         Rescale (normalize) weights for the kept set.
 
@@ -369,7 +293,7 @@ class PerspectiveProcessor:
             return positions_lf, lookthroughs_lf
 
         # -------------------------
-        # 2) Resolve weight labels 
+        # 2) Resolve weight labels from weight_labels_map
         # -------------------------
         pos_schema = set(positions_lf.collect_schema().names())
         lt_schema = (
@@ -378,14 +302,12 @@ class PerspectiveProcessor:
             else set()
         )
 
-        # Union of all possible weight labels (global + per-container lists)
-        all_pos_weights = set(position_weights)
-        all_lt_weights = set(lookthrough_weights)
-
-        if weight_labels_map:
-            for _, (pw, lw) in weight_labels_map.items():
-                all_pos_weights.update(pw or [])
-                all_lt_weights.update(lw or [])
+        # Union of all weight labels from weight_labels_map
+        all_pos_weights = set()
+        all_lt_weights = set()
+        for _, (pw, lw) in weight_labels_map.items():
+            all_pos_weights.update(pw or [])
+            all_lt_weights.update(lw or [])
 
         pos_weights_valid = [w for w in all_pos_weights if w in pos_schema]
         lt_weights_valid = [w for w in all_lt_weights if w in lt_schema]
@@ -408,9 +330,8 @@ class PerspectiveProcessor:
             pos_denoms = positions_lf.group_by(group_keys).agg(pos_denom_exprs)
 
             # 2) Essential lookthrough denoms (only for weights that exist on LT)
-            # Use PARENT's factor status, not the LT's own factor, to match legacy behavior:
-            # Legacy: rescale positions BEFORE applying rules to lookthroughs, so LT included
-            #         in denom if parent passed (regardless of whether LT itself would pass)
+            # LT's fcol is already null if parent failed (due to _synchronize_lookthroughs),
+            # so filtering on fcol.is_not_null() naturally excludes orphaned lookthroughs.
             if has_lookthroughs and lookthroughs_lf is not None and pos_weights_in_lt:
                 lt_denom_exprs: List[pl.Expr] = []
                 for fcol in pos_rescale_cols:
@@ -418,7 +339,7 @@ class PerspectiveProcessor:
                         lt_denom_exprs.append(
                             (pl.col(w) * pl.col(fcol))  # Weight * factor (consistent with positions)
                             .filter(
-                                (pl.col("record_type") == "essential_lookthroughs")
+                                (pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
                                 & pl.col(fcol).is_not_null()  # LT's fcol is null if parent failed (due to sync)
                             )
                             .sum()
@@ -584,11 +505,261 @@ class PerspectiveProcessor:
         """
         Return expression that checks if rule applies based on container type.
 
-        Original logic: rule.apply_to is compared against _position_data_type (container type).
-        Container type is stored in 'position_type' column for each row.
+        Logic:
+        - 'both' -> applies to all rows
+        - 'holding' -> only applies to holding container
+        - 'reference' (or any other value) -> applies to non-holding containers
         """
         apply_to = apply_to.lower()
-        if apply_to == "both":
+        if apply_to == ApplyTo.BOTH:
             return pl.lit(True)
-        # Check container type from position_type column
-        return pl.col("position_type") == apply_to
+        if apply_to == ApplyTo.HOLDING:
+            return pl.col("container") == Container.HOLDING
+        # 'reference' or any other value = not holding
+        return pl.col("container") != Container.HOLDING
+
+    def _build_weight_columns(
+        self,
+        positions_lf: pl.LazyFrame,
+        lookthroughs_lf: Optional[pl.LazyFrame],
+        metadata_map: Dict,
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]]
+    ) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame]]:
+        """
+        Build final weight columns: {w}_{config}_{pid} = w * factor_used
+
+        factor_used = fcol (no rescale) OR f"{fcol}_factors".struct.field(w) (rescaled)
+        """
+        has_lookthroughs = lookthroughs_lf is not None
+
+        # Factor columns from metadata_map (f_{config}_{pid})
+        factor_cols = [c for pmap in metadata_map.values() for c in pmap.values()]
+
+        # Resolve valid weight labels from weight_labels_map
+        pos_schema = set(positions_lf.collect_schema().names())
+
+        pos_weights_set = set()
+        ordered_pos_weights = []
+
+        lt_weights_set = set()
+        ordered_lt_weights = []
+
+        for _, (pw, lw) in weight_labels_map.items():
+            for w in (pw or []):
+                if w not in pos_weights_set:
+                    ordered_pos_weights.append(w)
+                    pos_weights_set.add(w)
+            for w in (lw or []):
+                if w not in lt_weights_set:
+                    ordered_lt_weights.append(w)
+                    lt_weights_set.add(w)
+
+        # Filter by schema membership
+        pos_weights_valid = [w for w in ordered_pos_weights if w in pos_schema]
+
+        # Build expressions for positions
+        pos_weight_exprs: List[pl.Expr] = []
+        for fcol in factor_cols:
+            if fcol not in pos_schema:
+                continue
+
+            suffix = fcol[2:]  # "config_pid"
+            factors_col = f"{fcol}_factors"
+            has_struct = factors_col in pos_schema
+
+            for w in pos_weights_valid:
+                if has_struct:
+                    factor_used = pl.col(factors_col).struct.field(w)
+                else:
+                    factor_used = pl.col(fcol)
+
+                pos_weight_exprs.append(
+                    pl.when(pl.col(fcol).is_not_null())
+                    .then(pl.col(w) * factor_used)
+                    .otherwise(pl.lit(None))
+                    .alias(f"{w}_{suffix}")
+                )
+
+        if pos_weight_exprs:
+            positions_lf = positions_lf.with_columns(pos_weight_exprs)
+
+        # Lookthroughs (if present)
+        if has_lookthroughs and lookthroughs_lf is not None:
+            lt_schema = set(lookthroughs_lf.collect_schema().names())
+            lt_weights_valid = [w for w in ordered_lt_weights if w in lt_schema]
+
+            lt_weight_exprs: List[pl.Expr] = []
+            for fcol in factor_cols:
+                if fcol not in lt_schema:
+                    continue
+
+                suffix = fcol[2:]
+                factors_col = f"{fcol}_factors"
+                has_struct = factors_col in lt_schema
+
+                for w in lt_weights_valid:
+                    if has_struct:
+                        factor_used = pl.col(factors_col).struct.field(w)
+                    else:
+                        factor_used = pl.col(fcol)
+
+                    lt_weight_exprs.append(
+                        pl.when(pl.col(fcol).is_not_null())
+                        .then(pl.col(w) * factor_used)
+                        .otherwise(pl.lit(None))
+                        .alias(f"{w}_{suffix}")
+                    )
+
+            if lt_weight_exprs:
+                lookthroughs_lf = lookthroughs_lf.with_columns(lt_weight_exprs)
+
+        return positions_lf, lookthroughs_lf
+
+    def _build_scale_factors(
+        self,
+        positions_lf: pl.LazyFrame,
+        lookthroughs_lf: Optional[pl.LazyFrame],
+        perspective_configs: Dict,
+        metadata_map: Dict,
+        weight_labels_map: Dict[str, Tuple[List[str], List[str]]]
+    ) -> Optional[pl.LazyFrame]:
+        """
+        Build scale factors LazyFrame for perspectives with scale_holdings_to_100_percent.
+
+        Returns None if no rescaling enabled for any perspective.
+
+        Formula:
+            numerator = sum(w * fcol) for kept positions + kept essential LTs
+            denominator = sum(w) for ALL positions + ALL essential LTs
+            scale_factor = numerator / denominator
+        """
+        # Find perspectives with scale_holdings_to_100_percent enabled
+        rescale_info = []  # List of (config_name, perspective_id, fcol)
+        for config_name, pmap in perspective_configs.items():
+            for pid in self._get_rescale_perspectives(pmap, "scale_holdings_to_100_percent"):
+                fcol = metadata_map[config_name][pid]
+                rescale_info.append((config_name, pid, fcol))
+
+        if not rescale_info:
+            return None
+
+        # Resolve valid weight labels from weight_labels_map
+        pos_schema = set(positions_lf.collect_schema().names())
+        lt_schema = (
+            set(lookthroughs_lf.collect_schema().names())
+            if lookthroughs_lf is not None
+            else set()
+        )
+
+        all_pos_weights = set()
+        for _, (pw, _) in weight_labels_map.items():
+            all_pos_weights.update(pw or [])
+
+        valid_weights = [w for w in all_pos_weights if w in pos_schema]
+        if not valid_weights:
+            return None
+
+        # Weights that exist on essential lookthroughs
+        elt_weights = [w for w in valid_weights if w in lt_schema]
+
+        # Compute total denominators per container (positions + essential LT)
+        tot_pos = (
+            positions_lf
+            .group_by("container")
+            .agg([pl.col(w).sum().alias(f"__totpos__{w}") for w in valid_weights])
+        )
+
+        if elt_weights and lookthroughs_lf is not None:
+            tot_elt = (
+                lookthroughs_lf
+                .filter(pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
+                .group_by("container")
+                .agg([pl.col(w).sum().alias(f"__totelt__{w}") for w in elt_weights])
+            )
+            total_denoms = tot_pos.join(tot_elt, on="container", how="left")
+            # Combine: total = positions + essential LT
+            combine_exprs = []
+            for w in valid_weights:
+                if w in elt_weights:
+                    combine_exprs.append(
+                        (pl.col(f"__totpos__{w}") + pl.col(f"__totelt__{w}").fill_null(0.0)).alias(f"__tot__{w}")
+                    )
+                else:
+                    combine_exprs.append(pl.col(f"__totpos__{w}").alias(f"__tot__{w}"))
+            total_denoms = total_denoms.with_columns(combine_exprs)
+        else:
+            total_denoms = tot_pos.with_columns([
+                pl.col(f"__totpos__{w}").alias(f"__tot__{w}") for w in valid_weights
+            ])
+
+        # Build scale factors for each rescaling perspective
+        scale_factor_frames = []
+
+        for config_name, pid, fcol in rescale_info:
+            if fcol not in pos_schema:
+                continue
+
+            # Kept positions numerator: sum(w * fcol) for kept rows
+            kept_pos = positions_lf.filter(pl.col(fcol).is_not_null())
+            keep_pos_nums = (
+                kept_pos
+                .group_by("container")
+                .agg([(pl.col(w) * pl.col(fcol)).sum().alias(f"__keeppos__{w}") for w in valid_weights])
+            )
+
+            # Include kept essential LT if fcol exists on lookthroughs
+            if elt_weights and lookthroughs_lf is not None and fcol in lt_schema:
+                kept_elt = (
+                    lookthroughs_lf
+                    .filter(
+                        (pl.col("record_type") == RecordType.ESSENTIAL_LOOKTHROUGHS)
+                        & pl.col(fcol).is_not_null()
+                    )
+                )
+                keep_elt_nums = (
+                    kept_elt
+                    .group_by("container")
+                    .agg([(pl.col(w) * pl.col(fcol)).sum().alias(f"__keepelt__{w}") for w in elt_weights])
+                )
+                keep_nums = keep_pos_nums.join(keep_elt_nums, on="container", how="left")
+                # Combine numerators
+                combine_exprs = []
+                for w in valid_weights:
+                    if w in elt_weights:
+                        combine_exprs.append(
+                            (pl.col(f"__keeppos__{w}") + pl.col(f"__keepelt__{w}").fill_null(0.0)).alias(f"__keep__{w}")
+                        )
+                    else:
+                        combine_exprs.append(pl.col(f"__keeppos__{w}").alias(f"__keep__{w}"))
+                keep_nums = keep_nums.with_columns(combine_exprs)
+            else:
+                keep_nums = keep_pos_nums.with_columns([
+                    pl.col(f"__keeppos__{w}").alias(f"__keep__{w}") for w in valid_weights
+                ])
+
+            # Join totals and compute scale_factor = keep / total
+            joined = keep_nums.join(total_denoms, on="container", how="left")
+
+            # Build flat rows: one per (container, weight_label)
+            for w in valid_weights:
+                sf_frame = (
+                    joined
+                    .select([
+                        pl.lit(config_name).alias("config"),
+                        pl.lit(pid).alias("perspective_id"),
+                        pl.col("container"),
+                        pl.lit(w).alias("weight_label"),
+                        pl.when(pl.col(f"__tot__{w}") > 0)
+                        .then(pl.col(f"__keep__{w}").fill_null(0.0) / pl.col(f"__tot__{w}"))
+                        .otherwise(pl.lit(None))
+                        .alias("scale_factor")
+                    ])
+                )
+                scale_factor_frames.append(sf_frame)
+
+        if not scale_factor_frames:
+            return None
+
+        # Union all scale factor frames
+        result = pl.concat(scale_factor_frames)
+        return result

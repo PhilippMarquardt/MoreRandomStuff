@@ -7,7 +7,7 @@ from typing import Dict, List, Any, Optional
 
 import polars as pl
 
-from ..utils.constants import INT_NULL
+from perspective_service.utils.constants import INT_NULL
 
 
 class RuleEvaluator:

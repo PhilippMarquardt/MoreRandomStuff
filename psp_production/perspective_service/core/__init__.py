@@ -1,11 +1,11 @@
 """Core processing components."""
 
-from .engine import PerspectiveEngine
-from .configuration_manager import ConfigurationManager
-from .data_ingestion import DataIngestion
-from .rule_evaluator import RuleEvaluator
-from .perspective_processor import PerspectiveProcessor
-from .output_formatter import OutputFormatter
+from perspective_service.core.engine import PerspectiveEngine
+from perspective_service.core.configuration_manager import ConfigurationManager
+from perspective_service.core.data_ingestion import DataIngestion
+from perspective_service.core.rule_evaluator import RuleEvaluator
+from perspective_service.core.perspective_processor import PerspectiveProcessor
+from perspective_service.core.output_formatter import OutputFormatter
 
 __all__ = [
     'PerspectiveEngine',
