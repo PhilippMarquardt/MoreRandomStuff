@@ -209,43 +209,44 @@ def profile_comparison(num_positions: int, num_lt_per_pos: int, num_perspectives
 
     processor = PerspectiveProcessor(engine.config)
 
-    # Build everything except scale_factors
-    positions_lf, lookthroughs_lf, metadata_map, _ = processor.build_perspective_plan(
-        positions_lf, lookthroughs_lf, perspective_configs, {}, weight_labels_map
-    )
-
     # ============================================
-    # OPTION A: Current approach (lazy SF)
+    # OPTION A: Current approach (optimized lazy SF via build_perspective_plan)
     # ============================================
     t0 = time.perf_counter()
-    scale_factors_lf = processor._build_scale_factors(
-        positions_lf, lookthroughs_lf, perspective_configs, metadata_map, weight_labels_map
+    positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
+        positions_lf, lookthroughs_lf, perspective_configs, {}, weight_labels_map
     )
-    t_build_sf_lazy = time.perf_counter() - t0
+    t_build_plan = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     collected_with_sf = pl.collect_all([positions_lf, lookthroughs_lf, scale_factors_lf])
     t_collect_with_sf = time.perf_counter() - t0
 
-    total_lazy = t_build_sf_lazy + t_collect_with_sf
+    total_lazy = t_build_plan + t_collect_with_sf
+
+    # For after-collect comparison, we need to rebuild the plan without collecting
+    positions_lf2, lookthroughs_lf2 = DataIngestion.build_dataframes(input_json, weight_labels_map)
+    positions_lf2, lookthroughs_lf2, _ = processor.build_perspective_plan(
+        positions_lf2, lookthroughs_lf2, perspective_configs, {}, weight_labels_map
+    )
 
     # ============================================
     # OPTION B: After-collect approach
     # ============================================
     t0 = time.perf_counter()
-    collected_no_sf = pl.collect_all([positions_lf, lookthroughs_lf])
+    collected_no_sf = pl.collect_all([positions_lf2, lookthroughs_lf2])
     t_collect_no_sf = time.perf_counter() - t0
 
     positions_df = collected_no_sf[0]
     lookthroughs_df = collected_no_sf[1]
 
-    # Build rescale_fcols list
+    # Build rescale_fcols list (factor column pattern: f_{config}_{pid})
     rescale_fcols = []
     for config, pmap in perspective_configs.items():
         for pid_str, modifiers in pmap.items():
             if "scale_holdings_to_100_percent" in (modifiers or []):
                 pid = int(pid_str)
-                fcol = metadata_map[config][pid]
+                fcol = f"f_{config}_{pid}"
                 rescale_fcols.append((config, pid, fcol))
 
     weights = ["initial_weight", "resulting_weight"]
@@ -261,8 +262,8 @@ def profile_comparison(num_positions: int, num_lt_per_pos: int, num_perspectives
     # ============================================
     # Results
     # ============================================
-    print(f"\nOPTION A (Lazy SF):")
-    print(f"  Build SF lazy:  {t_build_sf_lazy:.3f}s")
+    print(f"\nOPTION A (Optimized Lazy SF):")
+    print(f"  Build plan:     {t_build_plan:.3f}s")
     print(f"  Collect all:    {t_collect_with_sf:.3f}s")
     print(f"  TOTAL:          {total_lazy:.3f}s")
 

@@ -146,16 +146,16 @@ def run_benchmark(num_positions: int = 100000, num_perspectives: int = 10):
     t_expr = time.perf_counter()
     factor_expressions_pos = []
     factor_expressions_lt = []
-    metadata_map = {}
+    factor_map = {}
     has_lookthroughs = True
 
     for config_name, perspective_map in perspective_configs.items():
-        metadata_map[config_name] = {}
+        factor_map[config_name] = {}
         perspective_ids = sorted([int(k) for k in perspective_map.keys()])
 
         for perspective_id in perspective_ids:
             column_name = f"f_{config_name}_{perspective_id}"
-            metadata_map[config_name][perspective_id] = column_name
+            factor_map[config_name][perspective_id] = column_name
 
             modifier_names = perspective_map.get(str(perspective_id)) or []
             active_modifiers = processor._filter_overridden_modifiers(modifier_names)
@@ -186,7 +186,7 @@ def run_benchmark(num_positions: int = 100000, num_perspectives: int = 10):
 
     # Synchronize lookthroughs
     t_sync = time.perf_counter()
-    all_columns = [c for m in metadata_map.values() for c in m.values()]
+    all_columns = [c for m in factor_map.values() for c in m.values()]
     lookthroughs_lf = processor._synchronize_lookthroughs(
         lookthroughs_lf, positions_lf, all_columns
     )
@@ -199,7 +199,7 @@ def run_benchmark(num_positions: int = 100000, num_perspectives: int = 10):
         positions_lf,
         lookthroughs_lf,
         perspective_configs,
-        metadata_map,
+        factor_map,
         has_lookthroughs,
         {},
         weight_labels_map

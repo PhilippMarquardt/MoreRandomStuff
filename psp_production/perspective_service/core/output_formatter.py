@@ -13,25 +13,26 @@ class OutputFormatter:
     @staticmethod
     def format_output(positions_df: pl.DataFrame,
                       lookthroughs_df: pl.DataFrame,
-                      metadata_map: Dict,
+                      perspective_configs: Dict,
                       weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
-                      perspective_configs: Optional[Dict] = None,
                       original_containers: Optional[List[str]] = None,
                       scale_factors_df: Optional[pl.DataFrame] = None) -> Dict:
         """Format processed dataframes into structured output.
 
         Args:
+            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
             weight_labels_map: Per-container weight labels mapping
                 {container_name: (pos_weight_labels, lt_weight_labels)}
-            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
-                Used to determine which perspectives have rescaling enabled.
             original_containers: List of container names from input (for empty container handling)
             scale_factors_df: DataFrame with scale factors from Processor (or None if no rescaling)
         """
-        if not metadata_map:
+        if not perspective_configs:
             return {"perspective_configurations": {}}
 
-        results = OutputFormatter._initialize_results(metadata_map)
+        # Build factor_map from perspective_configs (factor column = f_{config}_{pid})
+        factor_map = OutputFormatter._build_factor_map(perspective_configs)
+
+        results = OutputFormatter._initialize_results(factor_map)
 
         # Compute union of weights from weight_labels_map
         position_weights = []
@@ -51,7 +52,7 @@ class OutputFormatter:
 
         # Get factor columns once
         factor_columns = [
-            col for pmap in metadata_map.values()
+            col for pmap in factor_map.values()
             for col in pmap.values()
         ]
 
@@ -60,7 +61,7 @@ class OutputFormatter:
             OutputFormatter._process_dataframe_batch(
                 positions_df,
                 "positions",
-                metadata_map,
+                factor_map,
                 factor_columns,
                 position_weights,
                 results,
@@ -73,7 +74,7 @@ class OutputFormatter:
             OutputFormatter._process_dataframe_batch(
                 lookthroughs_df,
                 "lookthrough",
-                metadata_map,
+                factor_map,
                 factor_columns,
                 lookthrough_weights,
                 results,
@@ -86,7 +87,7 @@ class OutputFormatter:
             scale_factors_df,
             results,
             weight_labels_map,
-            metadata_map,
+            factor_map,
             positions_df,
             position_weights
         )
@@ -94,18 +95,32 @@ class OutputFormatter:
         return {"perspective_configurations": results}
 
     @staticmethod
-    def _initialize_results(metadata_map: Dict) -> Dict:
+    def _build_factor_map(perspective_configs: Dict) -> Dict:
+        """Build factor column map from perspective_configs.
+
+        Factor columns follow the pattern: f_{config_name}_{perspective_id}
+        """
+        factor_map = {}
+        for config_name, pmap in perspective_configs.items():
+            factor_map[config_name] = {}
+            for pid_str in pmap:
+                pid = int(pid_str)
+                factor_map[config_name][pid] = f"f_{config_name}_{pid}"
+        return factor_map
+
+    @staticmethod
+    def _initialize_results(factor_map: Dict) -> Dict:
         """Initialize the results structure."""
         return {
             config_name: {pid: {} for pid in perspective_map}
-            for config_name, perspective_map in metadata_map.items()
+            for config_name, perspective_map in factor_map.items()
             if perspective_map
         }
 
     @staticmethod
     def _process_dataframe_batch(df: pl.DataFrame,
                                  mode: str,
-                                 metadata_map: Dict,
+                                 factor_map: Dict,
                                  factor_columns: List[str],
                                  weights: List[str],
                                  results: Dict,
@@ -123,7 +138,7 @@ class OutputFormatter:
 
         # IMPORTANT: Build candidate_weights from SAME universe as Processor
         candidate_weights_set = set(weights)
-        ordered_candidate_weights = list(weights) 
+        ordered_candidate_weights = list(weights)
 
         if weight_labels_map:
             for _, (pw, lw) in weight_labels_map.items():
@@ -137,7 +152,7 @@ class OutputFormatter:
         computed_cols = []
         for fc in available_factors:
             suffix = fc[2:]  # Remove 'f_' prefix
-            for w in candidate_weights_set:  
+            for w in candidate_weights_set:
                 c = f"{w}_{suffix}"
                 if c in df.columns:
                     computed_cols.append(c)
@@ -150,7 +165,7 @@ class OutputFormatter:
         df_slim = df.select(select_cols)
 
         # Process each perspective
-        for config_name, perspective_map in metadata_map.items():
+        for config_name, perspective_map in factor_map.items():
             for perspective_id, col_name in perspective_map.items():
                 if col_name not in df_slim.columns:
                     continue
@@ -162,7 +177,7 @@ class OutputFormatter:
                     perspective_id,
                     col_name,
                     base_cols,
-                    ordered_candidate_weights,  
+                    ordered_candidate_weights,
                     id_column,
                     results,
                     weight_labels_map
@@ -262,7 +277,7 @@ class OutputFormatter:
         scale_factors_df: Optional[pl.DataFrame],
         results: Dict,
         weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]],
-        metadata_map: Dict,
+        factor_map: Dict,
         positions_df: pl.DataFrame,
         position_weights: List[str]
     ):
@@ -298,7 +313,7 @@ class OutputFormatter:
                 sf_lookup[key] = row["scale_factor"]
 
         # Populate scale_factors for each config/perspective/container
-        for config_name, perspective_map in metadata_map.items():
+        for config_name, perspective_map in factor_map.items():
             for perspective_id in perspective_map:
                 for container in containers:
                     # Determine which weights to include

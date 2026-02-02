@@ -160,3 +160,17 @@ def build_initial_metrics_all_levels(
         lvl: (pl.concat(frames, how="vertical_relaxed") if frames else pl.LazyFrame())
         for lvl, frames in out.items()
     }
+
+
+
+  Location: _df_to_dict() method, lines 644-645
+
+  # Lines 644-645 currently:
+  if 'result' in result_output_df.columns.tolist():
+       result_output_df = result_output_df[result_output_df['result'] == True]
+
+  To add zero-weight filtering after line 645:
+  # Add: Filter positions where all weights are 0
+  result_output_df = result_output_df[
+      ~result_output_df[weight_labels].eq(0).all(axis=1)
+  ]

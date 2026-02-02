@@ -173,7 +173,7 @@ def profile_full_pipeline(
     # Build perspective plan
     with Timer("8. Build perspective plan (expressions)", results):
         processor = PerspectiveProcessor(engine.config)
-        positions_lf, lookthroughs_lf, metadata_map, scale_factors_lf = processor.build_perspective_plan(
+        positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
             positions_lf,
             lookthroughs_lf,
             perspective_configs,
@@ -204,9 +204,8 @@ def profile_full_pipeline(
         output = OutputFormatter.format_output(
             positions_df,
             lookthroughs_df,
-            metadata_map,
-            weight_labels_map,
             perspective_configs,
+            weight_labels_map,
             original_containers,
             scale_factors_df
         )
@@ -261,15 +260,15 @@ def profile_build_perspective_plan_detail(
     # Part 1: Build factor expressions
     with Timer("8a. Build factor expressions loop", results):
         factor_expressions_pos = []
-        metadata_map = {}
+        factor_map = {}
 
         for config_name, perspective_map in perspective_configs.items():
-            metadata_map[config_name] = {}
+            factor_map[config_name] = {}
             perspective_ids = sorted([int(k) for k in perspective_map.keys()])
 
             for perspective_id in perspective_ids:
                 column_name = f"f_{config_name}_{perspective_id}"
-                metadata_map[config_name][perspective_id] = column_name
+                factor_map[config_name][perspective_id] = column_name
 
                 modifier_names = perspective_map.get(str(perspective_id)) or []
                 active_modifiers = processor._filter_overridden_modifiers(modifier_names)
@@ -293,16 +292,23 @@ def profile_build_perspective_plan_detail(
     with Timer("8b. Apply factor expressions (with_columns)", results):
         positions_lf = positions_lf.with_columns(factor_expressions_pos)
 
+    # Part 2b: Apply rescaling (now includes sf_data computation)
+    with Timer("8b2. Apply rescaling", results):
+        positions_lf, _, sf_data = processor._apply_rescaling(
+            positions_lf, None, perspective_configs, factor_map,
+            False, precomputed_values, weight_labels_map
+        )
+
     # Part 3: Build weight columns
     with Timer("8c. Build weight columns", results):
         positions_lf, _ = processor._build_weight_columns(
-            positions_lf, None, metadata_map, weight_labels_map
+            positions_lf, None, factor_map, weight_labels_map
         )
 
-    # Part 4: Build scale factors
+    # Part 4: Build scale factors (uses precomputed sf_data)
     with Timer("8d. Build scale factors", results):
         scale_factors_lf = processor._build_scale_factors(
-            positions_lf, None, perspective_configs, metadata_map, weight_labels_map
+            sf_data, perspective_configs, factor_map, weight_labels_map
         )
 
     # Part 5: Collect

@@ -65,9 +65,17 @@ def profile_formatter(num_positions: int, num_perspectives: int):
     positions_lf, lookthroughs_lf = DataIngestion.build_dataframes(input_json, weight_labels_map)
 
     processor = PerspectiveProcessor(engine.config)
-    positions_lf, lookthroughs_lf, metadata_map, scale_factors_lf = processor.build_perspective_plan(
+    positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
         positions_lf, lookthroughs_lf, perspective_configs, {}, weight_labels_map
     )
+
+    # Build factor_map locally (for profiling - follows same pattern as processor)
+    factor_map = {}
+    for config_name, pmap in perspective_configs.items():
+        factor_map[config_name] = {}
+        for pid_str in pmap:
+            pid = int(pid_str)
+            factor_map[config_name][pid] = f"f_{config_name}_{pid}"
 
     # Collect
     to_collect = [positions_lf]
@@ -86,12 +94,12 @@ def profile_formatter(num_positions: int, num_perspectives: int):
     print("\nProfiling format_output internals...")
 
     # Simulate _process_dataframe_batch internals
-    factor_columns = [col for pmap in metadata_map.values() for col in pmap.values()]
+    factor_columns = [col for pmap in factor_map.values() for col in pmap.values()]
     position_weights = ["initial_weight", "resulting_weight"]
 
     # Time: filter + select per perspective
     start = time.perf_counter()
-    for config_name, perspective_map in metadata_map.items():
+    for config_name, perspective_map in factor_map.items():
         for perspective_id, col_name in perspective_map.items():
             # This is what _process_single_perspective does
             filtered = positions_df.filter(pl.col(col_name).is_not_null())
@@ -100,7 +108,7 @@ def profile_formatter(num_positions: int, num_perspectives: int):
 
     # Time: partition_by per perspective
     start = time.perf_counter()
-    for config_name, perspective_map in metadata_map.items():
+    for config_name, perspective_map in factor_map.items():
         for perspective_id, col_name in perspective_map.items():
             filtered = positions_df.filter(pl.col(col_name).is_not_null())
             if not filtered.is_empty():
@@ -110,7 +118,7 @@ def profile_formatter(num_positions: int, num_perspectives: int):
 
     # Time: to_list per perspective
     start = time.perf_counter()
-    for config_name, perspective_map in metadata_map.items():
+    for config_name, perspective_map in factor_map.items():
         for perspective_id, col_name in perspective_map.items():
             filtered = positions_df.filter(pl.col(col_name).is_not_null())
             if not filtered.is_empty():
@@ -122,8 +130,8 @@ def profile_formatter(num_positions: int, num_perspectives: int):
     # Full format_output
     start = time.perf_counter()
     output = OutputFormatter.format_output(
-        positions_df, lookthroughs_df, metadata_map, weight_labels_map,
-        perspective_configs, original_containers, scale_factors_df
+        positions_df, lookthroughs_df, perspective_configs, weight_labels_map,
+        original_containers, scale_factors_df
     )
     format_time = time.perf_counter() - start
     print(f"  FULL format_output(): {format_time:.3f}s")

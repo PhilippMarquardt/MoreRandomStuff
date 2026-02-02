@@ -186,7 +186,7 @@ class PerspectiveEngine:
 
         # Build perspective plan (keep/scale expressions)
         processor = PerspectiveProcessor(self.config)
-        positions_lf, lookthroughs_lf, metadata_map, scale_factors_lf = processor.build_perspective_plan(
+        positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
             positions_lf,
             lookthroughs_lf,
             perspective_configs,
@@ -200,7 +200,6 @@ class PerspectiveEngine:
                 "positions": positions_lf,
                 "lookthroughs": lookthroughs_lf,
                 "scale_factors": scale_factors_lf,
-                "metadata_map": metadata_map
             }
         
         # Collect all
@@ -224,9 +223,8 @@ class PerspectiveEngine:
         return OutputFormatter.format_output(
             positions_df,
             lookthroughs_df,
-            metadata_map,
-            weight_labels_map,
             perspective_configs,
+            weight_labels_map,
             original_containers,
             scale_factors_df
         )

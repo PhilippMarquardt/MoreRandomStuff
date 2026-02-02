@@ -8,7 +8,7 @@ import polars as pl
 
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.rule_evaluator import RuleEvaluator
-from perspective_service.models.enums import Container, RecordType, ApplyTo
+from perspective_service.models.enums import Container, RecordType, ApplyTo, WeightLabelEnum
 
 
 class PerspectiveProcessor:
@@ -22,29 +22,30 @@ class PerspectiveProcessor:
                                lookthroughs_lf: pl.LazyFrame,
                                perspective_configs: Dict,
                                precomputed_values: Dict,
-                               weight_labels_map: Dict[str, Tuple[List[str], List[str]]]) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Dict, Optional[pl.LazyFrame]]:
+                               weight_labels_map: Dict[str, Tuple[List[str], List[str]]]) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Optional[pl.LazyFrame]]:
         """
         Build execution plan for all perspectives.
 
         Returns:
-            Tuple of (processed_positions, processed_lookthroughs, metadata_map, scale_factors_lf)
+            Tuple of (processed_positions, processed_lookthroughs, scale_factors_lf)
         """
         # Initialize collections for expressions
         factor_expressions_pos = []
         factor_expressions_lt = []
 
-        metadata_map = {}
+        # Internal factor_map tracks factor columns (not exposed externally)
+        factor_map = {}
         has_lookthroughs = lookthroughs_lf is not None
 
         # Process each perspective configuration
         for config_name, perspective_map in perspective_configs.items():
-            metadata_map[config_name] = {}
+            factor_map[config_name] = {}
             perspective_ids = sorted([int(k) for k in perspective_map.keys()])
 
             for perspective_id in perspective_ids:
                 # Create unique factor column name for this perspective
                 column_name = f"f_{config_name}_{perspective_id}"
-                metadata_map[config_name][perspective_id] = column_name
+                factor_map[config_name][perspective_id] = column_name
 
                 # Get modifiers for this perspective
                 modifier_names = perspective_map.get(str(perspective_id)) or []
@@ -80,7 +81,7 @@ class PerspectiveProcessor:
             lookthroughs_lf = lookthroughs_lf.with_columns(factor_expressions_lt)
 
             # Synchronize lookthroughs with parent positions -> Remove children if parent dead
-            all_columns = [c for m in metadata_map.values() for c in m.values()]
+            all_columns = [c for m in factor_map.values() for c in m.values()]
             lookthroughs_lf = self._synchronize_lookthroughs(
                 lookthroughs_lf, positions_lf, all_columns
             )
@@ -90,7 +91,7 @@ class PerspectiveProcessor:
             positions_lf,
             lookthroughs_lf,
             perspective_configs,
-            metadata_map,
+            factor_map,
             has_lookthroughs,
             precomputed_values,
             weight_labels_map
@@ -100,7 +101,7 @@ class PerspectiveProcessor:
         positions_lf, lookthroughs_lf = self._build_weight_columns(
             positions_lf,
             lookthroughs_lf,
-            metadata_map,
+            factor_map,
             weight_labels_map
         )
 
@@ -108,11 +109,11 @@ class PerspectiveProcessor:
         scale_factors_lf = self._build_scale_factors(
             sf_data,
             perspective_configs,
-            metadata_map,
+            factor_map,
             weight_labels_map
         )
 
-        return positions_lf, lookthroughs_lf if has_lookthroughs else None, metadata_map, scale_factors_lf
+        return positions_lf, lookthroughs_lf if has_lookthroughs else None, scale_factors_lf
 
     def _build_keep_expression(self,
                                perspective_id: int,
@@ -252,7 +253,7 @@ class PerspectiveProcessor:
         positions_lf: pl.LazyFrame,
         lookthroughs_lf: Optional[pl.LazyFrame],
         perspective_configs: Dict,
-        metadata_map: Dict,
+        factor_map: Dict,
         has_lookthroughs: bool,
         precomputed_values: Dict,
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
@@ -284,9 +285,9 @@ class PerspectiveProcessor:
 
         for config_name, pmap in perspective_configs.items():
             for pid in self._get_rescale_perspectives(pmap, "scale_holdings_to_100_percent"):
-                pos_rescale_cols.append(metadata_map[config_name][pid])
+                pos_rescale_cols.append(factor_map[config_name][pid])
             for pid in self._get_rescale_perspectives(pmap, "scale_lookthroughs_to_100_percent"):
-                lt_rescale_cols.append(metadata_map[config_name][pid])
+                lt_rescale_cols.append(factor_map[config_name][pid])
 
         if not pos_rescale_cols and not lt_rescale_cols:
             return positions_lf, lookthroughs_lf, None
@@ -416,7 +417,7 @@ class PerspectiveProcessor:
             if has_criteria:
                 for config_name, pmap in perspective_configs.items():
                     for pid in self._get_rescale_perspectives(pmap, "scale_lookthroughs_to_100_percent"):
-                        fcol = metadata_map[config_name][pid]
+                        fcol = factor_map[config_name][pid]
                         if fcol not in lt_schema:
                             continue
                         fcols_for_matching.append(fcol)
@@ -540,7 +541,7 @@ class PerspectiveProcessor:
         self,
         positions_lf: pl.LazyFrame,
         lookthroughs_lf: Optional[pl.LazyFrame],
-        metadata_map: Dict,
+        factor_map: Dict,
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]]
     ) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame]]:
         """
@@ -550,8 +551,8 @@ class PerspectiveProcessor:
         """
         has_lookthroughs = lookthroughs_lf is not None
 
-        # Factor columns from metadata_map (f_{config}_{pid})
-        factor_cols = [c for pmap in metadata_map.values() for c in pmap.values()]
+        # Factor columns from factor_map (f_{config}_{pid})
+        factor_cols = [c for pmap in factor_map.values() for c in pmap.values()]
 
         # Resolve valid weight labels from weight_labels_map
         pos_schema = set(positions_lf.collect_schema().names())
@@ -637,11 +638,11 @@ class PerspectiveProcessor:
         self,
         sf_data: Optional[pl.LazyFrame],
         perspective_configs: Dict,
-        metadata_map: Dict,
+        factor_map: Dict,
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]]
     ) -> Optional[pl.LazyFrame]:
         """
-        Build scale factors from precomputed sf_data (from _apply_rescaling).
+        Build scale factors from precomputed sf_data, respecting per-container weight labels.
 
         sf_data contains:
         - __pden__{fcol}__{w} (kept pos numerator)
@@ -649,7 +650,7 @@ class PerspectiveProcessor:
         - __tot__{w} (total pos weight)
         - __totelt__{w} (total ELT weight)
 
-        This avoids re-scanning positions/LT - just arithmetic + unpivot.
+        Each container only gets scale factors for its own weight labels, avoiding NULL rows.
         """
         if sf_data is None:
             return None
@@ -658,99 +659,102 @@ class PerspectiveProcessor:
         rescale_fcols: List[Tuple[str, int, str]] = []
         for cfg, pmap in perspective_configs.items():
             for pid in self._get_rescale_perspectives(pmap, "scale_holdings_to_100_percent"):
-                fcol = metadata_map[cfg][pid]
+                fcol = factor_map[cfg][pid]
                 rescale_fcols.append((cfg, pid, fcol))
 
         if not rescale_fcols:
             return None
 
-        # Get valid weight labels from weight_labels_map
-        all_pos_weights = []
-        seen = set()
-        for _, (pw, _) in weight_labels_map.items():
-            for w in (pw or []):
-                if w not in seen:
-                    all_pos_weights.append(w)
-                    seen.add(w)
-
         sf_schema = set(sf_data.collect_schema().names())
 
-        # Filter to weights that exist in sf_data (via __tot__ columns)
-        weights = [w for w in all_pos_weights if f"__tot__{w}" in sf_schema]
-        if not weights:
+        # Build scale factors PER CONTAINER based on that container's weight labels
+        results = []
+        for container, (container_weights, _) in weight_labels_map.items():
+            if not container_weights:
+                continue
+
+            # Filter to weights that exist in sf_data
+            valid_weights = [w for w in container_weights if f"__tot__{w}" in sf_schema]
+            if not valid_weights:
+                continue
+
+            # Filter sf_data to this container
+            container_sf = sf_data.filter(pl.col("container") == container)
+
+            # Compute num/den/sf columns for this container's weights only
+            combine_exprs = []
+            for cfg, pid, fcol in rescale_fcols:
+                for w in valid_weights:
+                    pden_col = f"__pden__{fcol}__{w}"
+                    ltden_col = f"__ltden__{fcol}__{w}"
+                    tot_col = f"__tot__{w}"
+                    totelt_col = f"__totelt__{w}"
+
+                    if pden_col not in sf_schema:
+                        continue
+
+                    # num = pden + ltden
+                    num_expr = pl.col(pden_col).fill_null(0.0)
+                    if ltden_col in sf_schema:
+                        num_expr = num_expr + pl.col(ltden_col).fill_null(0.0)
+                    combine_exprs.append(num_expr.alias(f"num__{cfg}__{pid}__{w}"))
+
+                    # den = tot + totelt
+                    den_expr = pl.col(tot_col).fill_null(0.0)
+                    if totelt_col in sf_schema:
+                        den_expr = den_expr + pl.col(totelt_col).fill_null(0.0)
+                    combine_exprs.append(den_expr.alias(f"den__{cfg}__{pid}__{w}"))
+
+            if not combine_exprs:
+                continue
+
+            wide = container_sf.with_columns(combine_exprs)
+
+            # Compute scale_factor columns
+            sf_exprs = []
+            for cfg, pid, fcol in rescale_fcols:
+                for w in valid_weights:
+                    num_col = f"num__{cfg}__{pid}__{w}"
+                    den_col = f"den__{cfg}__{pid}__{w}"
+                    if f"__pden__{fcol}__{w}" not in sf_schema:
+                        continue
+                    sf_exprs.append(
+                        pl.when(pl.col(den_col) == 0.0)
+                          .then(pl.lit(None))
+                          .when(pl.col(num_col) == 0.0)
+                          .then(pl.lit(1.0))
+                          .otherwise(pl.col(num_col) / pl.col(den_col))
+                          .alias(f"sf__{cfg}__{pid}__{w}")
+                    )
+
+            if not sf_exprs:
+                continue
+
+            wide = wide.with_columns(sf_exprs)
+
+            # Unpivot to long format
+            sf_cols = [f"sf__{cfg}__{pid}__{w}" for cfg, pid, fcol in rescale_fcols
+                       for w in valid_weights if f"__pden__{fcol}__{w}" in sf_schema]
+
+            if not sf_cols:
+                continue
+
+            long = wide.unpivot(
+                index=["container"],
+                on=sf_cols,
+                variable_name="k",
+                value_name="scale_factor",
+            ).with_columns([
+                pl.col("k").str.split("__").alias("_parts"),
+            ]).with_columns([
+                pl.col("_parts").list.get(1).alias("config"),
+                pl.col("_parts").list.get(2).cast(pl.Int64).alias("perspective_id"),
+                pl.col("_parts").list.get(3).cast(WeightLabelEnum).alias("weight_label"),
+            ]).select(["config", "perspective_id", "container", "weight_label", "scale_factor"])
+
+            results.append(long)
+
+        if not results:
             return None
 
-        # 1) Compute combined num and den columns
-        combine_exprs = []
-        for cfg, pid, fcol in rescale_fcols:
-            for w in weights:
-                pden_col = f"__pden__{fcol}__{w}"
-                ltden_col = f"__ltden__{fcol}__{w}"
-                tot_col = f"__tot__{w}"
-                totelt_col = f"__totelt__{w}"
-
-                if pden_col not in sf_schema:
-                    continue
-
-                # num = pden + ltden
-                num_expr = pl.col(pden_col).fill_null(0.0)
-                if ltden_col in sf_schema:
-                    num_expr = num_expr + pl.col(ltden_col).fill_null(0.0)
-                combine_exprs.append(num_expr.alias(f"num__{cfg}__{pid}__{w}"))
-
-                # den = tot + totelt
-                den_expr = pl.col(tot_col).fill_null(0.0)
-                if totelt_col in sf_schema:
-                    den_expr = den_expr + pl.col(totelt_col).fill_null(0.0)
-                combine_exprs.append(den_expr.alias(f"den__{cfg}__{pid}__{w}"))
-
-        if not combine_exprs:
-            return None
-
-        wide = sf_data.with_columns(combine_exprs)
-
-        # 2) Compute scale_factor columns
-        sf_exprs = []
-        for cfg, pid, fcol in rescale_fcols:
-            for w in weights:
-                num_col = f"num__{cfg}__{pid}__{w}"
-                den_col = f"den__{cfg}__{pid}__{w}"
-                # Only add if the columns exist
-                if f"__pden__{fcol}__{w}" not in sf_schema:
-                    continue
-                sf_exprs.append(
-                    pl.when(pl.col(den_col) == 0.0)
-                      .then(pl.lit(None))
-                      .when(pl.col(num_col) == 0.0)
-                      .then(pl.lit(1.0))
-                      .otherwise(pl.col(num_col) / pl.col(den_col))
-                      .alias(f"sf__{cfg}__{pid}__{w}")
-                )
-
-        if not sf_exprs:
-            return None
-
-        wide = wide.with_columns(sf_exprs)
-
-        # 3) Unpivot to long format
-        sf_cols = [f"sf__{cfg}__{pid}__{w}" for cfg, pid, fcol in rescale_fcols for w in weights
-                   if f"__pden__{fcol}__{w}" in sf_schema]
-
-        if not sf_cols:
-            return None
-
-        long = wide.unpivot(
-            index=["container"],
-            on=sf_cols,
-            variable_name="k",
-            value_name="scale_factor",
-        )
-
-        # Parse "sf__{cfg}__{pid}__{w}"
-        return long.with_columns([
-            pl.col("k").str.split("__").alias("_parts"),
-        ]).with_columns([
-            pl.col("_parts").list.get(1).alias("config"),
-            pl.col("_parts").list.get(2).cast(pl.Int64).alias("perspective_id"),
-            pl.col("_parts").list.get(3).alias("weight_label"),
-        ]).select(["config", "perspective_id", "container", "weight_label", "scale_factor"])
+        return pl.concat(results)

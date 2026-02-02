@@ -86,13 +86,13 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
 
     factor_expressions_pos = []
     factor_expressions_lt = []
-    metadata_map = {"config": {}}
+    factor_map = {"config": {}}
 
     for config_name, perspective_map in perspective_configs.items():
         perspective_ids = sorted([int(k) for k in perspective_map.keys()])
         for perspective_id in perspective_ids:
             column_name = f"f_{config_name}_{perspective_id}"
-            metadata_map[config_name][perspective_id] = column_name
+            factor_map[config_name][perspective_id] = column_name
 
             modifier_names = perspective_map.get(str(perspective_id)) or []
             active_modifiers = processor._filter_overridden_modifiers(modifier_names)
@@ -111,7 +111,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
     lookthroughs_lf = lookthroughs_lf.with_columns(factor_expressions_lt)
 
     # Synchronize
-    all_columns = [c for m in metadata_map.values() for c in m.values()]
+    all_columns = [c for m in factor_map.values() for c in m.values()]
     lookthroughs_lf = processor._synchronize_lookthroughs(lookthroughs_lf, positions_lf, all_columns)
 
     t_baseline = time.perf_counter() - t0
@@ -123,7 +123,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
     t0 = time.perf_counter()
 
     positions_lf_rescaled, lookthroughs_lf_rescaled, sf_data = processor._apply_rescaling(
-        positions_lf, lookthroughs_lf, perspective_configs, metadata_map,
+        positions_lf, lookthroughs_lf, perspective_configs, factor_map,
         True, {}, weight_labels_map
     )
 
@@ -136,7 +136,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
     t0 = time.perf_counter()
 
     positions_lf_weighted, lookthroughs_lf_weighted = processor._build_weight_columns(
-        positions_lf_rescaled, lookthroughs_lf_rescaled, metadata_map, weight_labels_map
+        positions_lf_rescaled, lookthroughs_lf_rescaled, factor_map, weight_labels_map
     )
 
     t_weight_cols = time.perf_counter() - t0
@@ -148,7 +148,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
     t0 = time.perf_counter()
 
     scale_factors_lf = processor._build_scale_factors(
-        sf_data, perspective_configs, metadata_map, weight_labels_map
+        sf_data, perspective_configs, factor_map, weight_labels_map
     )
 
     t_scale_factors = time.perf_counter() - t0
