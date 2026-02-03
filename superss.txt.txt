@@ -1,0 +1,42 @@
+def get_perspectives_with_nested_criteria(self) -> Dict[int, List[Dict]]:
+        """
+        Find which perspectives have nested In/NotIn criteria requiring precomputation.
+
+        Returns:
+            Dict of {perspective_id: [nested_criteria_dicts]}
+        """
+        result = {}
+
+        def find_nested(criteria, found_list):
+            """Recursively find nested criteria."""
+            if not criteria:
+                return
+            if "and" in criteria:
+                for c in criteria["and"]:
+                    find_nested(c, found_list)
+            elif "or" in criteria:
+                for c in criteria["or"]:
+                    find_nested(c, found_list)
+            elif "not" in criteria:
+                find_nested(criteria["not"], found_list)
+            else:
+                value = criteria.get("value")
+                operator = criteria.get("operator_type")
+                if operator in ["In", "NotIn"] and isinstance(value, dict):
+                    # Skip rule_result references
+                    if value.get("table_name", "").lower() != "rule_result":
+                        found_list.append({
+                            "outer_column": criteria.get("column"),
+                            "operator": operator,
+                            "inner_criteria": value
+                        })
+
+        for pid, rules in self.config.perspectives.items():
+            nested_list = []
+            for rule in rules:
+                if rule.criteria:
+                    find_nested(rule.criteria, nested_list)
+            if nested_list:
+                result[pid] = nested_list
+
+        return result
