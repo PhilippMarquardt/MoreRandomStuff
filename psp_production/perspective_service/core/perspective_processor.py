@@ -8,7 +8,7 @@ import polars as pl
 
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.rule_evaluator import RuleEvaluator
-from perspective_service.models.enums import Container, RecordType, ApplyTo, WeightLabelEnum
+from perspective_service.models.enums import Container, RecordType, ApplyTo, WeightLabelEnum, ModifierType, LogicalOperator
 
 
 class PerspectiveProcessor:
@@ -21,7 +21,6 @@ class PerspectiveProcessor:
                                positions_lf: pl.LazyFrame,
                                lookthroughs_lf: pl.LazyFrame,
                                perspective_configs: Dict,
-                               precomputed_values: Dict,
                                weight_labels_map: Dict[str, Tuple[List[str], List[str]]]) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Optional[pl.LazyFrame]]:
         """
         Build execution plan for all perspectives.
@@ -54,10 +53,10 @@ class PerspectiveProcessor:
                 # Build expressions - same expression works for both positions and lookthroughs
                 # because it uses position_type column to determine applicability
                 keep_expr = self._build_keep_expression(
-                    perspective_id, active_modifiers, precomputed_values
+                    perspective_id, active_modifiers
                 )
                 scale_expr = self._build_scale_expression(
-                    perspective_id, precomputed_values
+                    perspective_id
                 )
                 factor_expressions_pos.append(
                     pl.when(keep_expr)
@@ -93,7 +92,6 @@ class PerspectiveProcessor:
             perspective_configs,
             factor_map,
             has_lookthroughs,
-            precomputed_values,
             weight_labels_map
         )
 
@@ -117,41 +115,40 @@ class PerspectiveProcessor:
 
     def _build_keep_expression(self,
                                perspective_id: int,
-                               modifier_names: List[str],
-                               precomputed_values: Dict) -> pl.Expr:
+                               modifier_names: List[str]) -> pl.Expr:
         """Build expression to determine if a row should be kept."""
         # Start with preprocessing modifiers
         expr = pl.lit(True)
         for modifier_name in modifier_names:
             modifier = self.config.modifiers.get(modifier_name)
-            if modifier and modifier.modifier_type == "PreProcessing":
+            if modifier and modifier.modifier_type == ModifierType.PRE_PROCESSING:
                 applicable_expr = self._get_applicable_expr(modifier.apply_to)
                 criteria_expr = RuleEvaluator.evaluate(
-                    modifier.criteria, perspective_id, precomputed_values
+                    modifier.criteria, perspective_id
                 )
                 # If applicable, EXCLUDE matching rows; if not applicable, keep all (True)
                 expr &= pl.when(applicable_expr).then(~criteria_expr).otherwise(pl.lit(True))
 
         # Apply perspective rules
-        rule_expr = self._build_rule_expression(perspective_id, precomputed_values)
+        rule_expr = self._build_rule_expression(perspective_id)
 
         # Apply postprocessing modifiers
         # PostProcessing modifiers may have rule_result references that need rule_expr context
         for modifier_name in modifier_names:
             modifier = self.config.modifiers.get(modifier_name)
-            if modifier and modifier.modifier_type == "PostProcessing":
+            if modifier and modifier.modifier_type == ModifierType.POST_PROCESSING:
                 applicable_expr = self._get_applicable_expr(modifier.apply_to)
                 # Pass preproc_keep & rule_expr so rule_result can't see rows removed by preprocessing
                 # (Legacy physically removed these rows; we match that by including expr in the context)
                 savior_expr = RuleEvaluator.evaluate(
-                    modifier.criteria, perspective_id, precomputed_values,
+                    modifier.criteria, perspective_id,
                     rule_expr=expr & rule_expr  # expr is preproc_keep
                 )
                 # If applicable, apply savior logic; if not applicable, don't change anything (False for or, True for and)
                 savior_combined = pl.when(applicable_expr).then(savior_expr).otherwise(
-                    pl.lit(False) if modifier.rule_result_operator == "or" else pl.lit(True)
+                    pl.lit(False) if modifier.rule_result_operator == LogicalOperator.OR else pl.lit(True)
                 )
-                if modifier.rule_result_operator == "or":
+                if modifier.rule_result_operator == LogicalOperator.OR:
                     rule_expr = rule_expr | savior_combined
                 else:
                     rule_expr = rule_expr & savior_combined
@@ -159,8 +156,7 @@ class PerspectiveProcessor:
         return expr & rule_expr
 
     def _build_rule_expression(self,
-                               perspective_id: int,
-                               precomputed_values: Dict) -> pl.Expr:
+                               perspective_id: int) -> pl.Expr:
         """Build expression from perspective rules."""
         rules = self.config.perspectives.get(perspective_id, [])
         rule_expr = None
@@ -171,7 +167,7 @@ class PerspectiveProcessor:
 
             applicable_expr = self._get_applicable_expr(rule.apply_to)
             criteria_expr = RuleEvaluator.evaluate(
-                rule.criteria, perspective_id, precomputed_values
+                rule.criteria, perspective_id
             )
 
             # If applicable, use criteria; if not applicable, pass (True)
@@ -181,7 +177,7 @@ class PerspectiveProcessor:
                 rule_expr = current_expr
             else:
                 previous_rule = rules[idx - 1]
-                if previous_rule.condition_for_next_rule == "or":
+                if previous_rule.condition_for_next_rule == LogicalOperator.OR:
                     rule_expr = rule_expr | current_expr
                 else:
                     rule_expr = rule_expr & current_expr
@@ -189,8 +185,7 @@ class PerspectiveProcessor:
         return rule_expr if rule_expr is not None else pl.lit(True)
 
     def _build_scale_expression(self,
-                                perspective_id: int,
-                                precomputed_values: Dict) -> pl.Expr:
+                                perspective_id: int) -> pl.Expr:
         """Build scaling factor expression."""
         scale_factor = pl.lit(1.0)
 
@@ -198,7 +193,7 @@ class PerspectiveProcessor:
             if rule.is_scaling_rule:
                 applicable_expr = self._get_applicable_expr(rule.apply_to)
                 criteria_expr = RuleEvaluator.evaluate(
-                    rule.criteria, perspective_id, precomputed_values
+                    rule.criteria, perspective_id
                 )
                 # Apply scale factor only when applicable AND criteria matches
                 scale_factor = pl.when(applicable_expr & criteria_expr).then(
@@ -215,7 +210,7 @@ class PerspectiveProcessor:
         # Get parent factors - aggregate by (instrument_id, sub_portfolio_id)
         # Legacy behavior: if ANY parent with same (instrument_id, sub_portfolio_id) fails,
         # the lookthrough should be removed. So we check if ANY factor is NULL.
-        parent_factors = positions_lf.group_by(["instrument_id", "sub_portfolio_id"]).agg([
+        parent_factors = positions_lf.group_by(["instrument_id", "sub_portfolio_id", "container"]).agg([
             pl.when(pl.col(col).is_null().any())
             .then(pl.lit(None))  # ANY parent failed → NULL (remove lookthrough)
             .otherwise(pl.col(col).first())  # ALL parents passed → keep factor
@@ -227,11 +222,11 @@ class PerspectiveProcessor:
         rename_map = {col: f"parent_{col}" for col in factor_columns}
         parent_factors = parent_factors.rename(rename_map)
 
-        # Join with lookthroughs
+        # Join with lookthroughs (include container for correctness)
         synchronized = lookthroughs_lf.join(
             parent_factors,
-            left_on=["parent_instrument_id", "sub_portfolio_id"],
-            right_on=["instrument_id", "sub_portfolio_id"],
+            left_on=["parent_instrument_id", "sub_portfolio_id", "container"],
+            right_on=["instrument_id", "sub_portfolio_id", "container"],
             how="left"
         )
 
@@ -255,7 +250,6 @@ class PerspectiveProcessor:
         perspective_configs: Dict,
         factor_map: Dict,
         has_lookthroughs: bool,
-        precomputed_values: Dict,
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
     ) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Optional[pl.LazyFrame]]:
         """
@@ -421,7 +415,7 @@ class PerspectiveProcessor:
                         if fcol not in lt_schema:
                             continue
                         fcols_for_matching.append(fcol)
-                        crit = RuleEvaluator.evaluate(modifier.criteria, pid, precomputed_values)
+                        crit = RuleEvaluator.evaluate(modifier.criteria, pid)
                         match_exprs.append(crit.cast(pl.Boolean).alias(f"__m_{fcol}"))
 
                 if match_exprs:
@@ -520,14 +514,14 @@ class PerspectiveProcessor:
 
         return list(final_set)
 
-    def _get_applicable_expr(self, apply_to: str) -> pl.Expr:
+    def _get_applicable_expr(self, apply_to: ApplyTo) -> pl.Expr:
         """
         Return expression that checks if rule applies based on container type.
 
         Logic:
-        - 'both' -> applies to all rows
-        - 'holding' -> only applies to holding container
-        - 'reference' (or any other value) -> applies to non-holding containers
+        - BOTH -> applies to all rows
+        - HOLDING -> only applies to holding container
+        - REFERENCE (or any other value) -> applies to non-holding containers
         """
         apply_to = apply_to.lower()
         if apply_to == ApplyTo.BOTH:

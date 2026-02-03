@@ -14,6 +14,7 @@ sys.path.insert(0, '.')
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.perspective_processor import PerspectiveProcessor
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo
 
 
 def create_test_data(num_positions: int = 100000, num_lookthroughs: int = 200000) -> Tuple[pl.LazyFrame, pl.LazyFrame]:
@@ -101,7 +102,7 @@ def setup_config_manager() -> ConfigurationManager:
         config.perspectives[pid] = [
             Rule(
                 name="rule_0",
-                apply_to="both",
+                apply_to=ApplyTo.BOTH,
                 criteria={"column": "currency_id", "operator_type": "In", "value": [1, 2, 3]},
                 condition_for_next_rule=None,
                 is_scaling_rule=False,

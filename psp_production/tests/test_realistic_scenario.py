@@ -11,6 +11,7 @@ import polars as pl
 
 from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo
 
 
 def generate_realistic_data(num_positions: int, num_lt_per_position: int = 1) -> Dict[str, Any]:
@@ -72,7 +73,7 @@ def setup_engine_realistic(num_perspectives: int) -> PerspectiveEngine:
         engine.config.perspectives[pid] = [
             Rule(
                 name=f"filter_instrument_{pid}",
-                apply_to="both",
+                apply_to=ApplyTo.BOTH,
                 criteria={"column": "instrument_id", "operator_type": ">=", "value": 1000 + (i * 5)},
                 is_scaling_rule=False
             )
@@ -308,7 +309,7 @@ def run_production_scenario():
             engine.config.perspectives[pid] = [
                 Rule(
                     name=f"filter_{pid}",
-                    apply_to="both",
+                    apply_to=ApplyTo.BOTH,
                     criteria={"column": "instrument_id", "operator_type": ">=", "value": 1000 + (i * 1000)},
                     is_scaling_rule=False
                 )
@@ -365,7 +366,7 @@ def run_production_scenario():
         engine.config.perspectives[pid] = [
             Rule(
                 name=f"filter_{pid}",
-                apply_to="both",
+                apply_to=ApplyTo.BOTH,
                 criteria={"column": "instrument_id", "operator_type": ">=", "value": 1000 + (i * 1000)},
                 is_scaling_rule=False
             )
@@ -424,7 +425,7 @@ def run_production_scenario():
         engine2.config.perspectives[pid] = [
             Rule(
                 name=f"filter_{pid}",
-                apply_to="both",
+                apply_to=ApplyTo.BOTH,
                 criteria={"column": "instrument_id", "operator_type": ">=", "value": 1000 + (i * 1000)},
                 is_scaling_rule=False
             )

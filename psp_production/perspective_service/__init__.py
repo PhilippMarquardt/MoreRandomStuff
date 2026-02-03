@@ -2,18 +2,16 @@
 Perspective Service - A Polars-based perspective processing engine.
 
 Usage:
-    from perspective_service import PerspectiveService
+    from perspective_service import PerspectiveEngine
 
-    service = PerspectiveService(connection_string="...")
-    result = service.process(input_json, perspective_configs, weights)
+    engine = PerspectiveEngine(connection_string="...")
+    result = engine.process(input_json)
 """
 
-from perspective_service.api import PerspectiveService
 from perspective_service.config import DatabaseConfig, load_config
 from perspective_service.core.engine import PerspectiveEngine
 
 __all__ = [
-    'PerspectiveService',
     'PerspectiveEngine',
     'DatabaseConfig',
     'load_config',

@@ -12,6 +12,7 @@ import pytest
 
 from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo
 
 
 # Test configuration
@@ -90,7 +91,7 @@ def test_speed_with_rescaling():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_by_instrument",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "instrument_id", "operator_type": "<", "value": 1000 + NUM_POSITIONS // 2},
             is_scaling_rule=False
         )
@@ -114,14 +115,12 @@ def test_speed_with_rescaling():
 
     # Run with rescaling enabled
     modifiers = ["scale_holdings_to_100_percent"]
+    input_json["perspective_configurations"] = {"test_config": {str(PERSPECTIVE_ID): modifiers}}
 
     print("\nRunning perspective engine with rescaling...")
     start = time.perf_counter()
 
-    output = engine.process(
-        input_json=input_json,
-        perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-    )
+    output = engine.process(input_json)
 
     elapsed = time.perf_counter() - start
     print(f"\n  Execution time: {elapsed:.3f} seconds")
@@ -164,7 +163,7 @@ def test_speed_without_rescaling():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_by_instrument",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "instrument_id", "operator_type": "<", "value": 1000 + NUM_POSITIONS // 2},
             is_scaling_rule=False
         )
@@ -179,14 +178,12 @@ def test_speed_without_rescaling():
 
     # Run without rescaling
     modifiers = []
+    input_json["perspective_configurations"] = {"test_config": {str(PERSPECTIVE_ID): modifiers}}
 
     print("Running perspective engine without rescaling...")
     start = time.perf_counter()
 
-    output = engine.process(
-        input_json=input_json,
-        perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-    )
+    output = engine.process(input_json)
 
     elapsed = time.perf_counter() - start
     print(f"\n  Execution time: {elapsed:.3f} seconds")

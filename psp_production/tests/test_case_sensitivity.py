@@ -23,6 +23,7 @@ from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.database.loaders.database_loader import DatabaseLoader
 from perspective_service.models.rule import Rule
 from perspective_service.models.modifier import Modifier
+from perspective_service.models.enums import ApplyTo, ModifierType
 
 
 # =============================================================================
@@ -97,16 +98,16 @@ def test_get_modifier_required_columns_case_normalization():
     # Add modifiers with uppercase table names
     cm.modifiers['test_mod_1'] = Modifier(
         name='test_mod_1',
-        modifier_type='PreProcessing',
-        apply_to='both',
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={'column': 'col', 'operator_type': '==', 'value': 1},
         required_columns={'INSTRUMENT': ['instrument_subtype_id']},
         override_modifiers=[]
     )
     cm.modifiers['test_mod_2'] = Modifier(
         name='test_mod_2',
-        modifier_type='PreProcessing',
-        apply_to='both',
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={'column': 'col', 'operator_type': '==', 'value': 2},
         required_columns={'PARENT_INSTRUMENT': ['INSTRUMENT_SUBTYPE_ID']},
         override_modifiers=[]
@@ -142,7 +143,7 @@ def test_determine_required_tables_case_normalization():
     engine.config.perspectives[1] = [
         Rule(
             name='rule1',
-            apply_to='both',
+            apply_to=ApplyTo.BOTH,
             criteria={'column': 'test', 'operator_type': '==', 'value': 1},
             is_scaling_rule=False,
             scale_factor=1.0
@@ -157,7 +158,7 @@ def test_determine_required_tables_case_normalization():
     engine.config.perspectives[2] = [
         Rule(
             name='rule2',
-            apply_to='both',
+            apply_to=ApplyTo.BOTH,
             criteria={'column': 'test', 'operator_type': '==', 'value': 2},
             is_scaling_rule=False,
             scale_factor=1.0
@@ -200,8 +201,8 @@ def test_determine_required_tables_includes_position_data():
     # Add modifier with POSITION_DATA (uppercase)
     engine.config.modifiers['test_mod'] = Modifier(
         name='test_mod',
-        modifier_type='PreProcessing',
-        apply_to='both',
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={'column': 'col', 'operator_type': '==', 'value': 1},
         required_columns={
             'POSITION_DATA': ['liquidity_type_id'],
@@ -513,7 +514,7 @@ def test_integration_full_pipeline_no_db():
     engine.config.perspectives[1] = [
         Rule(
             name='filter_rule',
-            apply_to='both',
+            apply_to=ApplyTo.BOTH,
             criteria={'column': 'keep_me', 'operator_type': '==', 'value': True},
             is_scaling_rule=False,
             scale_factor=1.0
@@ -530,6 +531,7 @@ def test_integration_full_pipeline_no_db():
         "ed": "2024-01-15",
         "position_weight_labels": ["weight"],
         "lookthrough_weight_labels": ["weight"],
+        "perspective_configurations": {"test": {"1": []}},
         "holding": {
             "positions": {
                 "pos_1": {
@@ -549,10 +551,7 @@ def test_integration_full_pipeline_no_db():
     }
 
     # Process (no DB, so reference data won't be loaded, but normalization should work)
-    output = engine.process(
-        input_json=input_json,
-        perspective_configs={"test": {"1": []}}
-    )
+    output = engine.process(input_json)
 
     # Verify output
     result = output["perspective_configurations"]["test"][1]

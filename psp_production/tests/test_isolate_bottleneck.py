@@ -12,6 +12,7 @@ from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.core.data_ingestion import DataIngestion
 from perspective_service.core.perspective_processor import PerspectiveProcessor
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo
 
 
 def generate_data(num_positions: int, num_lt_per_pos: int = 1) -> Dict[str, Any]:
@@ -64,7 +65,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
     for i in range(num_perspectives):
         pid = i + 1
         engine.config.perspectives[pid] = [
-            Rule(name=f"filter_{pid}", apply_to="both",
+            Rule(name=f"filter_{pid}", apply_to=ApplyTo.BOTH,
                  criteria={"column": "instrument_id", "operator_type": ">=", "value": 1000 + (i * 5)},
                  is_scaling_rule=False)
         ]

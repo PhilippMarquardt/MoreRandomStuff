@@ -15,6 +15,7 @@ from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.core.data_ingestion import DataIngestion
 from perspective_service.core.perspective_processor import PerspectiveProcessor
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo
 
 
 @dataclass
@@ -112,7 +113,7 @@ def setup_engine_with_perspectives(engine: PerspectiveEngine, num_perspectives: 
         engine.config.perspectives[pid] = [
             Rule(
                 name=f"filter_{pid}",
-                apply_to="both",
+                apply_to=ApplyTo.BOTH,
                 criteria={
                     "column": "instrument_id",
                     "operator_type": ">=",

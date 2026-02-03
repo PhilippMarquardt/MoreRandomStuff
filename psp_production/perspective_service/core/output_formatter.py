@@ -15,7 +15,6 @@ class OutputFormatter:
                       lookthroughs_df: pl.DataFrame,
                       perspective_configs: Dict,
                       weight_labels_map: Optional[Dict[str, Tuple[List[str], List[str]]]] = None,
-                      original_containers: Optional[List[str]] = None,
                       scale_factors_df: Optional[pl.DataFrame] = None) -> Dict:
         """Format processed dataframes into structured output.
 
@@ -23,7 +22,6 @@ class OutputFormatter:
             perspective_configs: {config_name: {perspective_id: [modifier_names]}}
             weight_labels_map: Per-container weight labels mapping
                 {container_name: (pos_weight_labels, lt_weight_labels)}
-            original_containers: List of container names from input (for empty container handling)
             scale_factors_df: DataFrame with scale factors from Processor (or None if no rescaling)
         """
         if not perspective_configs:

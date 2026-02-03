@@ -2,7 +2,6 @@
 Rule Evaluator - Converts rule criteria into Polars expressions for data filtering.
 """
 
-import json
 from typing import Dict, List, Any, Optional
 
 import polars as pl
@@ -17,7 +16,6 @@ class RuleEvaluator:
     def evaluate(cls,
                  criteria: Dict[str, Any],
                  perspective_id: Optional[int] = None,
-                 precomputed_values: Dict[str, List[Any]] = None,
                  rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """
         Convert rule criteria into a Polars expression.
@@ -25,7 +23,6 @@ class RuleEvaluator:
         Args:
             criteria: Dictionary defining the filter criteria
             perspective_id: ID of the current perspective (for variable substitution)
-            precomputed_values: Pre-computed values for nested criteria
             rule_expr: Expression representing rule evaluation results (for rule_result references)
 
         Returns:
@@ -36,40 +33,39 @@ class RuleEvaluator:
 
         # Handle logical operators
         if "and" in criteria:
-            return cls._evaluate_and(criteria["and"], perspective_id, precomputed_values, rule_expr)
+            return cls._evaluate_and(criteria["and"], perspective_id, rule_expr)
         if "or" in criteria:
-            return cls._evaluate_or(criteria["or"], perspective_id, precomputed_values, rule_expr)
+            return cls._evaluate_or(criteria["or"], perspective_id, rule_expr)
         if "not" in criteria:
-            return ~cls.evaluate(criteria["not"], perspective_id, precomputed_values, rule_expr)
+            return ~cls.evaluate(criteria["not"], perspective_id, rule_expr)
 
         # Handle simple criteria
-        return cls._evaluate_simple_criteria(criteria, perspective_id, precomputed_values, rule_expr)
+        return cls._evaluate_simple_criteria(criteria, perspective_id, rule_expr)
 
     @classmethod
     def _evaluate_and(cls, subcriteria: List[Dict], perspective_id: int,
-                      precomputed_values: Dict, rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
+                      rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Combine multiple criteria with AND logic using vectorized horizontal operation."""
         if not subcriteria:
             return pl.lit(True)
 
-        exprs = [cls.evaluate(crit, perspective_id, precomputed_values, rule_expr)
+        exprs = [cls.evaluate(crit, perspective_id, rule_expr)
                  for crit in subcriteria]
         return pl.all_horizontal(exprs)
 
     @classmethod
     def _evaluate_or(cls, subcriteria: List[Dict], perspective_id: int,
-                     precomputed_values: Dict, rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
+                     rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Combine multiple criteria with OR logic using vectorized horizontal operation."""
         if not subcriteria:
             return pl.lit(False)
 
-        exprs = [cls.evaluate(crit, perspective_id, precomputed_values, rule_expr)
+        exprs = [cls.evaluate(crit, perspective_id, rule_expr)
                  for crit in subcriteria]
         return pl.any_horizontal(exprs)
 
     @classmethod
     def _evaluate_simple_criteria(cls, criteria: Dict, perspective_id: int,
-                                  precomputed_values: Dict,
                                   rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Evaluate a simple column-operator-value criteria."""
         column = criteria.get("column", "").lower() if criteria.get("column") else None
@@ -112,28 +108,8 @@ class RuleEvaluator:
                 # No rule_expr context available - fall back to True
                 return pl.lit(True)
 
-            # =================================================================
-            # Precomputed nested criteria (non-rule_result)
-            # =================================================================
-            # For nested criteria from DB perspective rules (not rule_result references),
-            # values are precomputed in engine._precompute_nested_criteria() for efficiency.
-            #
-            # Why precompute instead of .any().over()?
-            # - is_in(list) uses O(1) hash lookup per row
-            # - .any().over() requires grouping + aggregation (more expensive)
-            # - Precomputed values are reused if same criteria appears multiple times
-            #
-            # The precomputation:
-            # 1. Evaluates inner criteria to find matching rows
-            # 2. Extracts unique values of the outer column from those rows
-            # 3. Caches as Python list keyed by JSON of the criteria
-            # =================================================================
-            if precomputed_values:
-                criteria_key = json.dumps(value, sort_keys=True)
-                matching_values = precomputed_values.get(criteria_key, [])
-                if operator == "In":
-                    return pl.col(column).is_in(matching_values)
-                return ~pl.col(column).is_in(matching_values)
+            # Nested criteria (non-rule_result) not currently supported
+            # If needed in the future, implement join-based membership approach
             return pl.lit(True)
 
         # Parse and apply the operator

@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.models.rule import Rule
 from perspective_service.models.modifier import Modifier
+from perspective_service.models.enums import ApplyTo, ModifierType
 
 
 # =============================================================================
@@ -180,7 +181,7 @@ def setup_engine(scenario: TestScenario) -> PerspectiveEngine:
     if scenario.has_filtering:
         rules.append(Rule(
             name="filter_rule",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_out", "operator_type": "!=", "value": True},
             condition_for_next_rule="and" if scenario.has_scaling else None,
             is_scaling_rule=False,
@@ -189,7 +190,7 @@ def setup_engine(scenario: TestScenario) -> PerspectiveEngine:
     else:
         rules.append(Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             condition_for_next_rule="and" if scenario.has_scaling else None,
             is_scaling_rule=False,
@@ -200,7 +201,7 @@ def setup_engine(scenario: TestScenario) -> PerspectiveEngine:
     if scenario.has_scaling:
         rules.append(Rule(
             name="scaling_rule",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "apply_scale", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=True,
@@ -213,8 +214,8 @@ def setup_engine(scenario: TestScenario) -> PerspectiveEngine:
     if scenario.scale_holdings:
         engine.config.modifiers["scale_holdings_to_100_percent"] = Modifier(
             name="scale_holdings_to_100_percent",
-            modifier_type="Scaling",
-            apply_to="both",
+            modifier_type=ModifierType.SCALING,
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             rule_result_operator=None,
             override_modifiers=[],
@@ -223,8 +224,8 @@ def setup_engine(scenario: TestScenario) -> PerspectiveEngine:
     if scenario.scale_lookthroughs:
         engine.config.modifiers["scale_lookthroughs_to_100_percent"] = Modifier(
             name="scale_lookthroughs_to_100_percent",
-            modifier_type="Scaling",
-            apply_to="both",
+            modifier_type=ModifierType.SCALING,
+            apply_to=ApplyTo.BOTH,
             criteria=None,  # in this test, rescale applies to all parents
             rule_result_operator=None,
             override_modifiers=[],
@@ -597,12 +598,10 @@ def run_scenario(scenario: TestScenario) -> bool:
     input_json = create_test_input_json()
     engine = setup_engine(scenario)
     modifiers = get_modifiers_list(scenario)
+    input_json["perspective_configurations"] = {"test_config": {str(PERSPECTIVE_ID): modifiers}}
 
     try:
-        output = engine.process(
-            input_json=input_json,
-            perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-        )
+        output = engine.process(input_json)
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
         import traceback

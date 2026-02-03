@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.models.rule import Rule
 from perspective_service.models.modifier import Modifier
+from perspective_service.models.enums import ApplyTo, ModifierType, LogicalOperator
 
 
 PERSPECTIVE_ID = 100
@@ -97,8 +98,8 @@ def test_rule_result_preprocess_group_savior():
     # PreProcessing: exclude where exclude_me=True
     engine.config.modifiers["exclude_flagged"] = Modifier(
         name="exclude_flagged",
-        modifier_type="PreProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={"column": "exclude_me", "operator_type": "==", "value": True},
         rule_result_operator=None,
         override_modifiers=[],
@@ -108,8 +109,8 @@ def test_rule_result_preprocess_group_savior():
     # This should save any position whose simulated_trade_id has ANY position that passed rules
     engine.config.modifiers["trade_savior"] = Modifier(
         name="trade_savior",
-        modifier_type="PostProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.POST_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={
             "column": "simulated_trade_id",
             "operator_type": "In",
@@ -118,7 +119,7 @@ def test_rule_result_preprocess_group_savior():
                 "column": "simulated_trade_id"
             }
         },
-        rule_result_operator="or",
+        rule_result_operator=LogicalOperator.OR,
         override_modifiers=[],
     )
 
@@ -126,7 +127,7 @@ def test_rule_result_preprocess_group_savior():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -228,8 +229,8 @@ def test_rule_result_preprocess_group_savior_multiple_groups():
 
     engine.config.modifiers["exclude_flagged"] = Modifier(
         name="exclude_flagged",
-        modifier_type="PreProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={"column": "exclude_me", "operator_type": "==", "value": True},
         rule_result_operator=None,
         override_modifiers=[],
@@ -237,21 +238,21 @@ def test_rule_result_preprocess_group_savior_multiple_groups():
 
     engine.config.modifiers["trade_savior"] = Modifier(
         name="trade_savior",
-        modifier_type="PostProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.POST_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={
             "column": "simulated_trade_id",
             "operator_type": "In",
             "value": {"table_name": "rule_result", "column": "simulated_trade_id"}
         },
-        rule_result_operator="or",
+        rule_result_operator=LogicalOperator.OR,
         override_modifiers=[],
     )
 
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -352,21 +353,21 @@ def test_rule_result_notin_or_savior():
     # PostProcessing with NotIn + OR: Save if group has no passers
     engine.config.modifiers["save_orphan_groups"] = Modifier(
         name="save_orphan_groups",
-        modifier_type="PostProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.POST_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={
             "column": "simulated_trade_id",
             "operator_type": "NotIn",
             "value": {"table_name": "rule_result", "column": "simulated_trade_id"}
         },
-        rule_result_operator="or",  # Keep if (filter OR NotIn group that passes)
+        rule_result_operator=LogicalOperator.OR,  # Keep if (filter OR NotIn group that passes)
         override_modifiers=[],
     )
 
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -483,8 +484,8 @@ def test_preprocess_propagation_to_lookthroughs():
 
     engine.config.modifiers["exclude_flagged"] = Modifier(
         name="exclude_flagged",
-        modifier_type="PreProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={"column": "exclude_me", "operator_type": "==", "value": True},
         rule_result_operator=None,
         override_modifiers=[],
@@ -494,7 +495,7 @@ def test_preprocess_propagation_to_lookthroughs():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -615,8 +616,8 @@ def test_preprocess_shared_parent():
 
     engine.config.modifiers["exclude_flagged"] = Modifier(
         name="exclude_flagged",
-        modifier_type="PreProcessing",
-        apply_to="both",
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.BOTH,
         criteria={"column": "exclude_me", "operator_type": "==", "value": True},
         rule_result_operator=None,
         override_modifiers=[],
@@ -625,7 +626,7 @@ def test_preprocess_shared_parent():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -768,7 +769,7 @@ def test_filter_positions_only():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_holding_only",
-            apply_to="holding",  # Only affects container named 'holding'
+            apply_to=ApplyTo.HOLDING,  # Only affects container named 'holding'
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -899,7 +900,7 @@ def test_filter_lookthroughs_only():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_reference_only",
-            apply_to="reference",  # Only affects non-holding containers
+            apply_to=ApplyTo.REFERENCE,  # Only affects non-holding containers
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -1010,8 +1011,8 @@ def test_preprocess_positions_only():
 
     engine.config.modifiers["exclude_flagged"] = Modifier(
         name="exclude_flagged",
-        modifier_type="PreProcessing",
-        apply_to="holding",  # Only affects holding containers
+        modifier_type=ModifierType.PRE_PROCESSING,
+        apply_to=ApplyTo.HOLDING,  # Only affects holding containers
         criteria={"column": "exclude_me", "operator_type": "==", "value": True},
         rule_result_operator=None,
         override_modifiers=[],
@@ -1020,7 +1021,7 @@ def test_preprocess_positions_only():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             condition_for_next_rule=None,
             is_scaling_rule=False,
@@ -1130,7 +1131,7 @@ def test_scale_positions_only():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             condition_for_next_rule="and",
             is_scaling_rule=False,
@@ -1138,7 +1139,7 @@ def test_scale_positions_only():
         ),
         Rule(
             name="scale_holding",
-            apply_to="holding",  # Only scales holding containers
+            apply_to=ApplyTo.HOLDING,  # Only scales holding containers
             criteria={"column": "scale_me", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=True,
@@ -1341,8 +1342,8 @@ def test_multi_weight_labels():
     # Rescaling modifier
     engine.config.modifiers["scale_holdings_to_100_percent"] = Modifier(
         name="scale_holdings_to_100_percent",
-        modifier_type="Scaling",
-        apply_to="both",
+        modifier_type=ModifierType.SCALING,
+        apply_to=ApplyTo.BOTH,
         criteria=None,
         rule_result_operator=None,
         override_modifiers=[],
@@ -1353,7 +1354,7 @@ def test_multi_weight_labels():
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_rule",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_out", "operator_type": "!=", "value": True},
             condition_for_next_rule="and",
             is_scaling_rule=False,
@@ -1361,7 +1362,7 @@ def test_multi_weight_labels():
         ),
         Rule(
             name="scale_rule",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "apply_scale", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=True,

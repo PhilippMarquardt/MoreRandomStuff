@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from perspective_service.core.engine import PerspectiveEngine
 from perspective_service.models.rule import Rule
 from perspective_service.models.modifier import Modifier
+from perspective_service.models.enums import ApplyTo, ModifierType, LogicalOperator
 
 
 # =============================================================================
@@ -228,8 +229,8 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.has_preprocess:
         engine.config.modifiers["exclude_flagged"] = Modifier(
             name="exclude_flagged",
-            modifier_type="PreProcessing",
-            apply_to="both",
+            modifier_type=ModifierType.PRE_PROCESSING,
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "exclude_me", "operator_type": "==", "value": True},
             rule_result_operator=None,
             override_modifiers=[],
@@ -241,7 +242,7 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
         # Two filters combined
         rules.append(Rule(
             name="filter_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
             condition_for_next_rule=scenario.filter_combine,
             is_scaling_rule=False,
@@ -249,27 +250,27 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
         ))
         rules.append(Rule(
             name="filter_b",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_b", "operator_type": "==", "value": True},
-            condition_for_next_rule="and" if (scenario.has_scale_a or scenario.has_scale_b) else None,
+            condition_for_next_rule=LogicalOperator.AND if (scenario.has_scale_a or scenario.has_scale_b) else None,
             is_scaling_rule=False,
             scale_factor=1.0,
         ))
     elif scenario.has_filter_a:
         rules.append(Rule(
             name="filter_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_a", "operator_type": "==", "value": True},
-            condition_for_next_rule="and" if (scenario.has_scale_a or scenario.has_scale_b) else None,
+            condition_for_next_rule=LogicalOperator.AND if (scenario.has_scale_a or scenario.has_scale_b) else None,
             is_scaling_rule=False,
             scale_factor=1.0,
         ))
     elif scenario.has_filter_b:
         rules.append(Rule(
             name="filter_b",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "filter_b", "operator_type": "==", "value": True},
-            condition_for_next_rule="and" if (scenario.has_scale_a or scenario.has_scale_b) else None,
+            condition_for_next_rule=LogicalOperator.AND if (scenario.has_scale_a or scenario.has_scale_b) else None,
             is_scaling_rule=False,
             scale_factor=1.0,
         ))
@@ -277,9 +278,9 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
         # No filtering - pass all
         rules.append(Rule(
             name="pass_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria=None,
-            condition_for_next_rule="and" if (scenario.has_scale_a or scenario.has_scale_b) else None,
+            condition_for_next_rule=LogicalOperator.AND if (scenario.has_scale_a or scenario.has_scale_b) else None,
             is_scaling_rule=False,
             scale_factor=1.0,
         ))
@@ -288,10 +289,10 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.has_postprocess_or:
         engine.config.modifiers["savior_or"] = Modifier(
             name="savior_or",
-            modifier_type="PostProcessing",
-            apply_to="both",
+            modifier_type=ModifierType.POST_PROCESSING,
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "save_me", "operator_type": "==", "value": True},
-            rule_result_operator="or",  # Keep if rule passes OR save_me=True
+            rule_result_operator=LogicalOperator.OR,  # Keep if rule passes OR save_me=True
             override_modifiers=[],
         )
         modifiers_to_add.append("savior_or")
@@ -299,10 +300,10 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.has_postprocess_and:
         engine.config.modifiers["restrict_and"] = Modifier(
             name="restrict_and",
-            modifier_type="PostProcessing",
-            apply_to="both",
+            modifier_type=ModifierType.POST_PROCESSING,
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "save_me", "operator_type": "==", "value": True},
-            rule_result_operator="and",  # Keep only if rule passes AND save_me=True
+            rule_result_operator=LogicalOperator.AND,  # Keep only if rule passes AND save_me=True
             override_modifiers=[],
         )
         modifiers_to_add.append("restrict_and")
@@ -311,7 +312,7 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.has_scale_a:
         rules.append(Rule(
             name="scale_a",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "scale_a", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=True,
@@ -321,7 +322,7 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.has_scale_b:
         rules.append(Rule(
             name="scale_b",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "scale_b", "operator_type": "==", "value": True},
             condition_for_next_rule=None,
             is_scaling_rule=True,
@@ -334,8 +335,8 @@ def setup_engine(scenario: ModifierScenario) -> PerspectiveEngine:
     if scenario.scale_holdings:
         engine.config.modifiers["scale_holdings_to_100_percent"] = Modifier(
             name="scale_holdings_to_100_percent",
-            modifier_type="Scaling",
-            apply_to="both",
+            modifier_type=ModifierType.SCALING,
+            apply_to=ApplyTo.BOTH,
             criteria=None,
             rule_result_operator=None,
             override_modifiers=[],
@@ -515,13 +516,10 @@ def run_scenario(scenario: ModifierScenario) -> bool:
 
     input_json = create_test_input_json()
     engine, modifiers = setup_engine(scenario)
+    input_json["perspective_configurations"] = {"test_config": {str(PERSPECTIVE_ID): modifiers}}
 
     try:
-        # Note: perspective_configs expects string keys for perspective IDs
-        output = engine.process(
-            input_json=input_json,
-            perspective_configs={"test_config": {str(PERSPECTIVE_ID): modifiers}},
-        )
+        output = engine.process(input_json)
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
         import traceback
@@ -664,19 +662,17 @@ def test_all_positions_removed() -> bool:
     engine.config.perspectives[PERSPECTIVE_ID] = [
         Rule(
             name="filter_all",
-            apply_to="both",
+            apply_to=ApplyTo.BOTH,
             criteria={"column": "instrument_id", "operator_type": "==", "value": -999},
             is_scaling_rule=False
         )
     ]
 
     input_json = create_test_input_json()
+    input_json["perspective_configurations"] = {"test_config": {str(PERSPECTIVE_ID): []}}
 
     try:
-        output = engine.process(
-            input_json=input_json,
-            perspective_configs={"test_config": {str(PERSPECTIVE_ID): []}},
-        )
+        output = engine.process(input_json)
     except Exception as e:
         print(f"  [ERROR] PSP failed: {e}")
         import traceback

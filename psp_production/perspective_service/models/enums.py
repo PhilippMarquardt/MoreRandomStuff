@@ -27,6 +27,19 @@ class ApplyTo(StrEnum):
     REFERENCE = "reference"
 
 
+class ModifierType(StrEnum):
+    """Modifier processing types."""
+    PRE_PROCESSING = "PreProcessing"
+    POST_PROCESSING = "PostProcessing"
+    SCALING = "Scaling"
+
+
+class LogicalOperator(StrEnum):
+    """Logical operators for rule chaining."""
+    AND = "and"
+    OR = "or"
+
+
 class WeightLabel(StrEnum):
     """Weight label types - the possible weight column names."""
     WEIGHT = "weight"

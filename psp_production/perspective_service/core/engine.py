@@ -31,44 +31,36 @@ from perspective_service.utils.constants import INT_NULL
 class PerspectiveEngine:
     """Main orchestrator for perspective processing."""
 
-    def __init__(self,
-                 connection_string: Optional[str] = None,
-                 system_version_timestamp: Optional[str] = None):
+    def __init__(self, connection_string: Optional[str] = None):
         """
         Initialize the PerspectiveEngine.
 
         Args:
             connection_string: ODBC connection string for database access
-            system_version_timestamp: Optional timestamp for temporal queries
         """
-        self.system_version_timestamp = system_version_timestamp
-
         # Create DatabaseLoader if connection string provided
         if connection_string:
             self.db_loader = DatabaseLoader(connection_string)
         else:
             self.db_loader = None
 
-        # Step 1 & 2: Load Perspectives and Modifiers
-        self.config = ConfigurationManager(self.db_loader, system_version_timestamp)
+        # Load Perspectives and Modifiers
+        self.config = ConfigurationManager(self.db_loader)
 
     def process(self,
                 input_json: Dict,
-                perspective_configs: Dict[str, Dict[str, List[str]]],
                 return_raw_dataframes: bool = False) -> Dict:
         """
         Process input data through perspective rules (JSON input path).
 
         Args:
-            input_json: Raw input data containing positions and lookthroughs
-            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
+            input_json: Raw input data containing positions, lookthroughs, and perspective_configurations
             return_raw_dataframes: If True, return raw DataFrames instead of formatted output
 
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        self._parse_custom_perspectives(input_json)
-
+        perspective_configs = input_json.get('perspective_configurations', {})
         weight_labels_map = DataIngestion.get_weight_labels(input_json)
 
         # Build dataframes from JSON
@@ -80,27 +72,15 @@ class PerspectiveEngine:
         if positions_lf.collect_schema().names() == []:
             return {"perspective_configurations": {}}
 
-        # Join reference data if needed
-        required_tables = self._determine_required_tables(perspective_configs)
-        if required_tables and self.db_loader:
-            effective_date = input_json.get('ed')
-            if not effective_date:
-                raise ValueError("Missing required field 'ed' (effective date)")
-            positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
-                positions_lf,
-                lookthroughs_lf,
-                required_tables,
-                self.db_loader,
-                self.system_version_timestamp,
-                effective_date
-            )
-
-        if positions_lf.collect_schema().names() == []:
-            return {"perspective_configurations": {}}
-
-        return self._process_core(
-            positions_lf, lookthroughs_lf, perspective_configs,
-            weight_labels_map, return_raw_dataframes
+        return self.process_dataframes(
+            positions_lf=positions_lf,
+            weight_labels_map=weight_labels_map,
+            perspective_configs=perspective_configs,
+            lookthroughs_lf=lookthroughs_lf,
+            effective_date=input_json.get('ed'),
+            system_version_timestamp=input_json.get('system_version_timestamp'),
+            custom_perspective_rules=input_json.get('custom_perspective_rules'),
+            return_raw_dataframes=return_raw_dataframes
         )
 
     def process_dataframes(
@@ -110,6 +90,7 @@ class PerspectiveEngine:
         perspective_configs: Dict[str, Dict[str, List[str]]],
         lookthroughs_lf: Optional[pl.LazyFrame] = None,
         effective_date: Optional[str] = None,
+        system_version_timestamp: Optional[str] = None,
         custom_perspective_rules: Optional[Dict] = None,
         return_raw_dataframes: bool = False
     ) -> Dict:
@@ -122,6 +103,7 @@ class PerspectiveEngine:
             perspective_configs: {config_name: {perspective_id: [modifier_names]}}
             lookthroughs_lf: Optional LazyFrame of lookthroughs
             effective_date: For DB reference joins (required if DB connected and rules need ref data)
+            system_version_timestamp: Optional timestamp for temporal reference data queries
             custom_perspective_rules: Optional {pid: {rules: [...]}} dict
             return_raw_dataframes: If True, return raw DataFrames instead of formatted output
 
@@ -151,7 +133,7 @@ class PerspectiveEngine:
                     lookthroughs_lf,
                     required_tables,
                     self.db_loader,
-                    self.system_version_timestamp,
+                    system_version_timestamp,
                     effective_date
                 )
 
@@ -176,21 +158,12 @@ class PerspectiveEngine:
 
         Called by both process() and process_dataframes() after data preparation.
         """
-        # Get original containers before any filtering (for empty container handling)
-        original_containers = positions_lf.select("container").unique().collect().to_series().to_list()
-
-        # Precompute nested criteria values
-        precomputed_values = self._precompute_nested_criteria(
-            positions_lf, lookthroughs_lf, perspective_configs
-        )
-
         # Build perspective plan (keep/scale expressions)
         processor = PerspectiveProcessor(self.config)
         positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
             positions_lf,
             lookthroughs_lf,
             perspective_configs,
-            precomputed_values,
             weight_labels_map
         )
 
@@ -225,7 +198,6 @@ class PerspectiveEngine:
             lookthroughs_df,
             perspective_configs,
             weight_labels_map,
-            original_containers,
             scale_factors_df
         )
 
@@ -324,90 +296,6 @@ class PerspectiveEngine:
                     requirements[asset_key].remove('analytics_category_id')
                 if not requirements[asset_key]:
                     del requirements[asset_key]
-
-    def _precompute_nested_criteria(self,
-                                    positions_lf: pl.LazyFrame,
-                                    lookthroughs_lf: pl.LazyFrame,
-                                    perspective_configs: Dict) -> Dict[str, Any]:
-        """
-        Precompute values for nested criteria (criteria within criteria).
-
-        When an In/NotIn operator has a dict value (nested criteria), we:
-        1. Evaluate the inner criteria to filter rows
-        2. Extract the outer column's values from matching rows
-        3. Cache the results for use during rule evaluation
-
-        Returns:
-            Dict of precomputed values keyed by json.dumps of the nested criteria
-        """
-        nested_queries = {}
-
-        def find_nested_criteria(criteria):
-            """Recursively find and queue nested criteria for precomputation."""
-            if not criteria:
-                return
-
-            if "and" in criteria:
-                for c in criteria["and"]:
-                    find_nested_criteria(c)
-            elif "or" in criteria:
-                for c in criteria["or"]:
-                    find_nested_criteria(c)
-            elif "not" in criteria:
-                find_nested_criteria(criteria["not"])
-            else:
-                value = criteria.get("value")
-                operator = criteria.get("operator_type")
-
-                # Check for nested criteria in In/NotIn operators
-                if operator in ["In", "NotIn"] and isinstance(value, dict):
-                    # Skip rule_result references - they must be handled at evaluation time
-                    # because rule_result depends on the outcome of rule evaluation
-                    if value.get("table_name", "").lower() == "rule_result":
-                        return  # Skip precomputation for rule_result references
-
-                    key = json.dumps(value, sort_keys=True)
-                    target_column = criteria.get("column")
-
-                    # Build query for nested criteria - evaluate the inner criteria
-                    # and extract the outer column's values from matching rows
-                    inner_expr = RuleEvaluator.evaluate(value, None, None)
-                    query = (
-                        positions_lf.filter(inner_expr)
-                        .select(pl.col(target_column))
-                        .drop_nulls()
-                        .unique()
-                    )
-                    nested_queries[key] = query
-
-        # Search all rules and modifiers for nested criteria
-        for perspective_map in perspective_configs.values():
-            for perspective_id in perspective_map.keys():
-                # Check perspective rules
-                for rule in self.config.perspectives.get(int(perspective_id), []):
-                    if rule.criteria:
-                        find_nested_criteria(rule.criteria)
-
-                # Check modifiers for this perspective
-                modifier_names = perspective_map[perspective_id] or []
-                all_modifiers = list(set(modifier_names + self.config.default_modifiers))
-                for modifier_name in all_modifiers:
-                    if modifier_name in self.config.modifiers:
-                        modifier = self.config.modifiers[modifier_name]
-                        if modifier.criteria:
-                            find_nested_criteria(modifier.criteria)
-
-        # Execute all nested queries in one batch for efficiency
-        if not nested_queries:
-            return {}
-
-        keys = list(nested_queries.keys())
-        results = pl.collect_all(list(nested_queries.values()))
-
-        return {
-            key: result.to_series().to_list()
-            for key, result in zip(keys, results)
-        }
 
     def _parse_custom_perspectives(self, input_json: Dict) -> None:
         """
