@@ -10,8 +10,6 @@ from typing import Dict, List, Optional
 import polars as pl
 import pyodbc
 
-from perspective_service.utils.ttl_cache import ttl_cache
-
 class DatabaseLoadError(Exception):
     """Raised when database loading fails."""
     pass
@@ -50,7 +48,6 @@ class DatabaseLoader:
 
     # ==================== PERSPECTIVES ====================
 
-    @ttl_cache(ttl=300)
     def load_perspectives(self, system_version_timestamp: Optional[str] = None) -> Dict[int, Dict]:
         """Load perspectives from FN_GET_SUBSETTING_SERVICE_PERSPECTIVES."""
         try:

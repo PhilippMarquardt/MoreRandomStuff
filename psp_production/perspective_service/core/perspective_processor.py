@@ -9,13 +9,33 @@ import polars as pl
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.rule_evaluator import RuleEvaluator
 from perspective_service.models.enums import Container, RecordType, ApplyTo, WeightLabelEnum, ModifierType, LogicalOperator
+from perspective_service.models.rule import Rule
 
 
 class PerspectiveProcessor:
     """Processes data through perspective rules and modifiers."""
 
-    def __init__(self, config_manager: ConfigurationManager):
+    def __init__(
+        self,
+        config_manager: ConfigurationManager,
+        custom_perspectives: Optional[Dict[int, List[Rule]]] = None
+    ):
         self.config = config_manager
+        self.custom_perspectives = custom_perspectives or {}
+
+    def _get_perspective_rules(self, perspective_id: int) -> List[Rule]:
+        """
+        Get rules for a perspective (custom takes precedence over DB).
+
+        Args:
+            perspective_id: The perspective ID
+
+        Returns:
+            List of Rule objects for this perspective
+        """
+        if perspective_id in self.custom_perspectives:
+            return self.custom_perspectives[perspective_id]
+        return self.config.perspectives.get(perspective_id, [])
 
     def build_perspective_plan(self,
                                positions_lf: pl.LazyFrame,
@@ -158,7 +178,7 @@ class PerspectiveProcessor:
     def _build_rule_expression(self,
                                perspective_id: int) -> pl.Expr:
         """Build expression from perspective rules."""
-        rules = self.config.perspectives.get(perspective_id, [])
+        rules = self._get_perspective_rules(perspective_id)
         rule_expr = None
 
         for idx, rule in enumerate(rules):
@@ -189,7 +209,7 @@ class PerspectiveProcessor:
         """Build scaling factor expression."""
         scale_factor = pl.lit(1.0)
 
-        for rule in self.config.perspectives.get(perspective_id, []):
+        for rule in self._get_perspective_rules(perspective_id):
             if rule.is_scaling_rule:
                 applicable_expr = self._get_applicable_expr(rule.apply_to)
                 criteria_expr = RuleEvaluator.evaluate(

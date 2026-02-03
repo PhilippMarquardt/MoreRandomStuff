@@ -65,12 +65,12 @@ class DataIngestion:
         if lookthroughs_lf is not None:
             lookthroughs_lf = lookthroughs_lf.rename({c: c.lower() for c in lookthroughs_lf.collect_schema().names()})
 
-        # Standardize columns
+        # Instrument idneitifer -> instrumentid renaming and verification of sub_portfolio_id
         positions_lf = DataIngestion._standardize_columns(positions_lf)
         if lookthroughs_lf is not None:
             lookthroughs_lf = DataIngestion._standardize_columns(lookthroughs_lf)
 
-        # Cast container and record_type to enum types
+        # Use the polars enums to cast columns
         positions_lf = positions_lf.with_columns([
             pl.col("container").cast(ContainerEnum),
             pl.col("record_type").cast(RecordTypeEnum),

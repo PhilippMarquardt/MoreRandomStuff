@@ -25,6 +25,7 @@ from perspective_service.core.output_formatter import OutputFormatter
 from perspective_service.core.rule_evaluator import RuleEvaluator
 from perspective_service.database.loaders.database_loader import DatabaseLoader
 from perspective_service.models.rule import Rule
+from perspective_service.models.enums import ApplyTo, LogicalOperator
 from perspective_service.utils.constants import INT_NULL
 
 
@@ -83,6 +84,26 @@ class PerspectiveEngine:
             return_raw_dataframes=return_raw_dataframes
         )
 
+    def get_requirements(self, input_json: Dict) -> Dict[str, List[str]]:
+        """
+        Get required database tables/columns for the given request (thread-safe).
+
+        Call this BEFORE process() to know what position data columns to fetch.
+        This method does not modify engine state.
+
+        Args:
+            input_json: Request JSON (needs perspective_configurations, optionally custom_perspective_rules)
+
+        Returns:
+            Dict of {table_name: [column_names]}
+        """
+        custom_required_cols: Dict[int, Dict[str, List[str]]] = {}
+        if input_json.get('custom_perspective_rules'):
+            _, custom_required_cols = self._parse_custom_rules(input_json['custom_perspective_rules'])
+
+        perspective_configs = input_json.get('perspective_configurations', {})
+        return self._determine_required_tables(perspective_configs, custom_required_cols)
+
     def process_dataframes(
         self,
         positions_lf: pl.LazyFrame,
@@ -110,9 +131,11 @@ class PerspectiveEngine:
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        # Parse custom perspectives if provided
+        # Parse custom perspectives (thread-safe: returns dicts, doesn't store on self)
+        custom_perspectives: Dict[int, List[Rule]] = {}
+        custom_required_columns: Dict[int, Dict[str, List[str]]] = {}
         if custom_perspective_rules:
-            self._parse_custom_perspectives({"custom_perspective_rules": custom_perspective_rules})
+            custom_perspectives, custom_required_columns = self._parse_custom_rules(custom_perspective_rules)
 
         # Normalize provided DataFrames
         all_pos, all_lt = DataIngestion.get_all_weights(weight_labels_map)
@@ -126,7 +149,7 @@ class PerspectiveEngine:
 
         # Join reference data if effective_date provided and DB connected
         if effective_date and self.db_loader:
-            required_tables = self._determine_required_tables(perspective_configs)
+            required_tables = self._determine_required_tables(perspective_configs, custom_required_columns)
             if required_tables:
                 positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
                     positions_lf,
@@ -142,7 +165,7 @@ class PerspectiveEngine:
 
         return self._process_core(
             positions_lf, lookthroughs_lf, perspective_configs,
-            weight_labels_map, return_raw_dataframes
+            weight_labels_map, return_raw_dataframes, custom_perspectives
         )
 
     def _process_core(
@@ -151,7 +174,8 @@ class PerspectiveEngine:
         lookthroughs_lf: Optional[pl.LazyFrame],
         perspective_configs: Dict[str, Dict[str, List[str]]],
         weight_labels_map: Dict[str, Tuple[List[str], List[str]]],
-        return_raw_dataframes: bool = False
+        return_raw_dataframes: bool = False,
+        custom_perspectives: Optional[Dict[int, List[Rule]]] = None
     ) -> Dict:
         """
         Common processing core - precompute, build plan, collect, format.
@@ -159,7 +183,7 @@ class PerspectiveEngine:
         Called by both process() and process_dataframes() after data preparation.
         """
         # Build perspective plan (keep/scale expressions)
-        processor = PerspectiveProcessor(self.config)
+        processor = PerspectiveProcessor(self.config, custom_perspectives or {})
         positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
             positions_lf,
             lookthroughs_lf,
@@ -201,15 +225,23 @@ class PerspectiveEngine:
             scale_factors_df
         )
 
-    def _determine_required_tables(self,
-                                   perspective_configs: Dict[str, Dict[str, List[str]]]) -> Dict[str, List[str]]:
+    def _determine_required_tables(
+        self,
+        perspective_configs: Dict[str, Dict[str, List[str]]],
+        custom_required_columns: Optional[Dict[int, Dict[str, List[str]]]] = None
+    ) -> Dict[str, List[str]]:
         """
         Determine which database tables are needed based on perspective rules and modifiers.
+
+        Args:
+            perspective_configs: {config_name: {perspective_id: [modifier_names]}}
+            custom_required_columns: Optional custom perspective required columns (thread-safe)
 
         Returns:
             Dict of {table_name: [column_names]} including position_data requirements
         """
         required_tables: Dict[str, List[str]] = {}
+        custom_required_columns = custom_required_columns or {}
 
         # Collect all perspective IDs being used
         perspective_ids = set()
@@ -224,12 +256,26 @@ class PerspectiveEngine:
         # Add default modifiers
         all_modifier_names.update(self.config.default_modifiers)
 
-        # Get required columns from perspectives (already normalized by ConfigurationManager)
+        # Get required columns from DB perspectives (already normalized by ConfigurationManager)
         for pid in perspective_ids:
             if pid in self.config.required_columns_by_perspective:
                 for table, columns in self.config.required_columns_by_perspective[pid].items():
                     table_lower = table.lower()
                     # Legacy alias: InstrumentInput -> position_data
+                    if table_lower == 'instrumentinput':
+                        table_lower = 'position_data'
+                    if table_lower not in required_tables:
+                        required_tables[table_lower] = []
+                    for col in columns:
+                        col_lower = col.lower()
+                        if col_lower not in required_tables[table_lower]:
+                            required_tables[table_lower].append(col_lower)
+
+        # Get required columns from custom perspectives (passed as parameter, thread-safe)
+        for pid in perspective_ids:
+            if pid in custom_required_columns:
+                for table, columns in custom_required_columns[pid].items():
+                    table_lower = table.lower()
                     if table_lower == 'instrumentinput':
                         table_lower = 'position_data'
                     if table_lower not in required_tables:
@@ -297,29 +343,37 @@ class PerspectiveEngine:
                 if not requirements[asset_key]:
                     del requirements[asset_key]
 
-    def _parse_custom_perspectives(self, input_json: Dict) -> None:
+    def _parse_custom_rules(
+        self,
+        custom_perspective_rules: Dict
+    ) -> Tuple[Dict[int, List[Rule]], Dict[int, Dict[str, List[str]]]]:
         """
-        Parse custom perspective rules from input JSON.
+        Parse custom perspective rules (thread-safe: returns dicts, doesn't store on self).
 
         Custom perspective IDs MUST be negative to distinguish them from
         database-loaded perspectives.
 
         Args:
-            input_json: Raw input data that may contain 'custom_perspective_rules'
+            custom_perspective_rules: Dict of {pid_str: {rules: [...]}}
+
+        Returns:
+            Tuple of (perspectives_dict, required_columns_dict)
         """
-        custom_rules = input_json.get('custom_perspective_rules', {})
-        if not custom_rules:
-            return
+        perspectives: Dict[int, List[Rule]] = {}
+        all_required_columns: Dict[int, Dict[str, List[str]]] = {}
+
+        if not custom_perspective_rules:
+            return perspectives, all_required_columns
 
         # Validate all IDs are negative
-        for pid in custom_rules.keys():
+        for pid in custom_perspective_rules.keys():
             if int(pid) > 0:
                 raise ValueError(
                     "Custom Perspective Rule IDs MUST be negative to separate them from real Perspective IDs"
                 )
 
-        # Add each custom perspective
-        for pid_str, perspective_data in custom_rules.items():
+        # Parse each custom perspective
+        for pid_str, perspective_data in custom_perspective_rules.items():
             pid = int(pid_str)
 
             # rules is REQUIRED
@@ -367,15 +421,17 @@ class PerspectiveEngine:
 
                 internal_rules.append(Rule(
                     name=f"custom_rule_{pid}_{i}",
-                    apply_to=rule['apply_to'],
+                    apply_to=ApplyTo(rule['apply_to']),
                     criteria=clean_criteria,
-                    condition_for_next_rule=rule.get('condition_for_next_rule'),
+                    condition_for_next_rule=LogicalOperator(rule['condition_for_next_rule'].lower()) if rule.get('condition_for_next_rule') else None,
                     is_scaling_rule=is_scaling_rule,
                     scale_factor=(rule['scale_factor'] / 100) if is_scaling_rule else 1.0
                 ))
 
-            self.config.perspectives[pid] = internal_rules
+            perspectives[pid] = internal_rules
 
             # Track required columns for this custom perspective
             if required_columns:
-                self.config.required_columns_by_perspective[pid] = required_columns
+                all_required_columns[pid] = required_columns
+
+        return perspectives, all_required_columns

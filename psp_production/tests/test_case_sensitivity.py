@@ -487,12 +487,14 @@ def test_integration_mixed_case_custom_perspective():
         }
     }
 
-    # Parse custom perspective
-    engine._parse_custom_perspectives(input_json)
+    # Parse custom perspective (thread-safe: returns dicts, doesn't store on engine)
+    _, required_columns_by_perspective = engine._parse_custom_rules(
+        input_json['custom_perspective_rules']
+    )
 
     # Check that required_columns were normalized
-    assert -1 in engine.config.required_columns_by_perspective
-    req_cols = engine.config.required_columns_by_perspective[-1]
+    assert -1 in required_columns_by_perspective
+    req_cols = required_columns_by_perspective[-1]
 
     # Should have single 'instrument' key (not multiple case variants)
     assert len(req_cols) == 1, f"Expected 1 table, got {len(req_cols)}: {list(req_cols.keys())}"

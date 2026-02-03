@@ -3,12 +3,13 @@ Configuration Manager - Manages rules, modifiers, and perspective configurations
 """
 
 import json
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from perspective_service.models.rule import Rule
 from perspective_service.models.modifier import Modifier
 from perspective_service.models.enums import ApplyTo, ModifierType, LogicalOperator
 from perspective_service.utils.supported_modifiers import SUPPORTED_MODIFIERS, DEFAULT_MODIFIERS
+from perspective_service.utils.ttl_cache import ttl_cache
 from perspective_service.database.loaders.database_loader import DatabaseLoader, DatabaseLoadError
 
 
@@ -22,25 +23,41 @@ class ConfigurationManager:
         Args:
             db_loader: DatabaseLoader instance for loading perspectives
         """
-        self.perspectives: Dict[int, List[Rule]] = {}
+        self._db_loader = db_loader
+
+        # Non-cached (hardcoded, never changes)
         self.modifiers: Dict[str, Modifier] = {}
         self.default_modifiers: List[str] = list(DEFAULT_MODIFIERS)
         self.modifier_overrides: Dict[str, List[str]] = {}
-        self.required_columns_by_perspective: Dict[int, Dict[str, List[str]]] = {}
 
-        self._load_configuration(db_loader)
-
-    def _load_configuration(self, db_loader: Optional[DatabaseLoader]):
-        """Load configuration - DB only, no JSON fallback."""
-        if db_loader is not None:
-            db_perspectives = db_loader.load_perspectives()
-            self._parse_db_perspectives(db_perspectives)
-
-        # Always load hardcoded modifiers
         self._load_hardcoded_modifiers()
 
-    def _parse_db_perspectives(self, db_perspectives: Dict[int, Dict]):
-        """Parse perspectives from database format."""
+    @ttl_cache(ttl=300)
+    def _load_perspectives(self) -> Tuple[Dict[int, List[Rule]], Dict[int, Dict[str, List[str]]]]:
+        """Load and parse perspectives from DB with TTL caching."""
+        if self._db_loader is None:
+            return {}, {}
+
+        db_perspectives = self._db_loader.load_perspectives()
+        return self._parse_db_perspectives(db_perspectives)
+
+    @property
+    def perspectives(self) -> Dict[int, List[Rule]]:
+        """Get perspectives dict (TTL-cached, refreshes automatically)."""
+        return self._load_perspectives()[0]
+
+    @property
+    def required_columns_by_perspective(self) -> Dict[int, Dict[str, List[str]]]:
+        """Get required columns by perspective (TTL-cached, refreshes automatically)."""
+        return self._load_perspectives()[1]
+
+    def _parse_db_perspectives(
+        self, db_perspectives: Dict[int, Dict]
+    ) -> Tuple[Dict[int, List[Rule]], Dict[int, Dict[str, List[str]]]]:
+        """Parse perspectives from database format. Returns (perspectives, required_columns)."""
+        perspectives: Dict[int, List[Rule]] = {}
+        all_required_columns: Dict[int, Dict[str, List[str]]] = {}
+
         for perspective_id, p_def in db_perspectives.items():
             if not p_def.get('is_active', True):
                 continue
@@ -71,9 +88,11 @@ class ConfigurationManager:
                 )
                 rules.append(rule)
 
-            self.perspectives[perspective_id] = rules
+            perspectives[perspective_id] = rules
             if required_columns:
-                self.required_columns_by_perspective[perspective_id] = required_columns
+                all_required_columns[perspective_id] = required_columns
+
+        return perspectives, all_required_columns
 
     def _load_hardcoded_modifiers(self):
         """Load modifiers from hardcoded SUPPORTED_MODIFIERS dict."""
