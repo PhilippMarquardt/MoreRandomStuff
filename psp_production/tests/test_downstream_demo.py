@@ -1,14 +1,10 @@
 """
-Demo: How downstream can use PSP raw outputs for lookthrough calculations.
-
-This implementation MUST match old PositionEngine.calculate_single_lookthrough() exactly.
-
 PSP outputs (when return_raw_dataframes=True):
 - positions_lf: positions with factor/weight columns
 - lookthroughs_lf: lookthrough underlyings with record_type, parent_instrument_id
 - scale_factors_lf: scale factors per (config, pid, container)
 
-Weight logic by granularity (matching old PositionEngine):
+Weight logic by granularity:
 - "no": PI = initial_weight, PR = resulting_weight
 - lookthrough (has underlying): PI = initial_exposure_weight × weight
 - lookthrough (leaf, no underlying): PI = initial_exposure_weight alone

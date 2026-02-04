@@ -1,6 +1,4 @@
 """
-Hardcoded modifier definitions.
-These are constants - modifiers and their requirements.
 
 Modifier Types:
 - PreProcessing: Positions matching criteria are REMOVED

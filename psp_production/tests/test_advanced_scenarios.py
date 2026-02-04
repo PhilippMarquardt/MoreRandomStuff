@@ -1,5 +1,5 @@
 """
-Advanced Scenarios Test - Tests for complex edge cases and regressions.
+Tests for complex edge cases and regressions.
 
 Test Categories:
 1. rule_result + PreProcessing + Group Savior (Critical Regression)

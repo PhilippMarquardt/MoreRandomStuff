@@ -1,7 +1,5 @@
 """
-Comprehensive Rescaling Combinations Test (World A semantics)
-
-World A semantics implemented (matches your CURRENT PSP):
+Semantics implemented:
 - Scaling rules affect economic mass (effective weight = w * fcol).
 - Essential lookthroughs (ELT) do NOT inherit parent's scaling factor.
   They only inherit REMOVAL via synchronization if parent is removed.
