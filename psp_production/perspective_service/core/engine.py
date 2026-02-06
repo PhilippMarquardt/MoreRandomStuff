@@ -22,7 +22,10 @@ import polars as pl
 from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
-tracer = trace.get_tracer(__name__)
+
+
+def _tracer():
+    return trace.get_tracer(__name__)
 
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.data_ingestion import DataIngestion
@@ -69,7 +72,7 @@ class PerspectiveEngine:
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        with tracer.start_as_current_span("process") as span:
+        with _tracer().start_as_current_span("process") as span:
             logger.info("process() called (return_raw=%s)", return_raw_dataframes)
             span.set_attribute("return_raw_dataframes", return_raw_dataframes)
 
@@ -79,7 +82,7 @@ class PerspectiveEngine:
             logger.debug("Parsed %d containers from weight_labels_map", len(weight_labels_map))
 
             # Build dataframes from JSON
-            with tracer.start_as_current_span("build_dataframes"):
+            with _tracer().start_as_current_span("build_dataframes"):
                 positions_lf, lookthroughs_lf = DataIngestion.build_dataframes(
                     input_json,
                     weight_labels_map
@@ -155,7 +158,7 @@ class PerspectiveEngine:
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        with tracer.start_as_current_span("process_dataframes") as span:
+        with _tracer().start_as_current_span("process_dataframes") as span:
             logger.info("process_dataframes() called with %d configs, return_raw=%s",
                         len(perspective_configs), return_raw_dataframes)
             span.set_attribute("num_configs", len(perspective_configs))
@@ -169,7 +172,7 @@ class PerspectiveEngine:
                 logger.debug("Parsed %d custom perspectives", len(custom_perspectives))
 
             # Normalize provided DataFrames
-            with tracer.start_as_current_span("normalize_dataframes"):
+            with _tracer().start_as_current_span("normalize_dataframes"):
                 all_pos, all_lt = DataIngestion.get_all_weights(weight_labels_map)
                 all_weights = list(set(all_pos + all_lt))
                 positions_lf, lookthroughs_lf = DataIngestion.normalize_dataframes(
@@ -188,7 +191,7 @@ class PerspectiveEngine:
             if effective_date and self.db_loader:
                 required_tables = self._determine_required_tables(perspective_configs, custom_required_columns)
                 if required_tables:
-                    with tracer.start_as_current_span("join_reference_data") as ref_span:
+                    with _tracer().start_as_current_span("join_reference_data") as ref_span:
                         logger.info("Joining reference data from %d tables", len(required_tables))
                         ref_span.set_attribute("num_tables", len(required_tables))
                         positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
@@ -226,7 +229,7 @@ class PerspectiveEngine:
         Called by both process() and process_dataframes() after data preparation.
         """
         # Build perspective plan (keep/scale expressions)
-        with tracer.start_as_current_span("build_perspective_plan") as span:
+        with _tracer().start_as_current_span("build_perspective_plan") as span:
             logger.info("Building perspective plan...")
             span.set_attribute("num_configs", len(perspective_configs))
             t0 = time.perf_counter()
@@ -251,7 +254,7 @@ class PerspectiveEngine:
             }
 
         # Collect all
-        with tracer.start_as_current_span("collect_all") as span:
+        with _tracer().start_as_current_span("collect_all") as span:
             logger.info("Collecting and formatting output...")
             t0 = time.perf_counter()
 
@@ -274,7 +277,7 @@ class PerspectiveEngine:
             logger.debug("Collected %d dataframes in %.3fs", len(to_collect), time.perf_counter() - t0)
 
         # Format output
-        with tracer.start_as_current_span("format_output"):
+        with _tracer().start_as_current_span("format_output"):
             t0 = time.perf_counter()
             result = OutputFormatter.format_output(
                 positions_df,

@@ -11,7 +11,9 @@ import polars as pl
 import pyodbc
 from opentelemetry import trace, context as otel_context
 
-tracer = trace.get_tracer(__name__)
+
+def _tracer():
+    return trace.get_tracer(__name__)
 
 class DatabaseLoadError(Exception):
     """Raised when database loading fails."""
@@ -34,7 +36,7 @@ class DatabaseLoader:
             query: SQL query string
             use_pyodbc: If True, use pyodbc connection. If False (default), use arrow-odbc.
         """
-        with tracer.start_as_current_span("db.query") as span:
+        with _tracer().start_as_current_span("db.query") as span:
             span.set_attribute("db.system", "mssql")
             span.set_attribute("db.statement", query[:500])
             if use_pyodbc:
@@ -58,7 +60,7 @@ class DatabaseLoader:
 
     def load_perspectives(self, system_version_timestamp: Optional[str] = None) -> Dict[int, Dict]:
         """Load perspectives from FN_GET_SUBSETTING_SERVICE_PERSPECTIVES."""
-        with tracer.start_as_current_span("db.load_perspectives") as span:
+        with _tracer().start_as_current_span("db.load_perspectives") as span:
             try:
                 sql_timestamp = 'null' if system_version_timestamp is None else repr(system_version_timestamp)
                 query = f"SELECT [dbo].[FN_GET_SUBSETTING_SERVICE_PERSPECTIVES]({sql_timestamp})"
@@ -105,7 +107,7 @@ class DatabaseLoader:
                             system_version_timestamp: Optional[str],
                             ed: Optional[str]) -> Dict[str, pl.DataFrame]:
         """Load reference data for specified tables in PARALLEL."""
-        with tracer.start_as_current_span("db.load_reference_data") as span:
+        with _tracer().start_as_current_span("db.load_reference_data") as span:
             span.set_attribute("num_instrument_ids", len(instrument_ids))
 
             # Build list of (table_name, query) tasks
@@ -134,7 +136,7 @@ class DatabaseLoader:
             def _run_query(table_name: str, query: str) -> pl.DataFrame:
                 token = otel_context.attach(parent_ctx)
                 try:
-                    with tracer.start_as_current_span(f"db.query.{table_name}") as q_span:
+                    with _tracer().start_as_current_span(f"db.query.{table_name}") as q_span:
                         q_span.set_attribute("db.table", table_name)
                         return self._execute_query(query)
                 finally:
