@@ -14,7 +14,7 @@ class RuleEvaluator:
 
     @classmethod
     def evaluate(cls,
-                 criteria: Dict[str, Any],
+                 criteria: Optional[Dict[str, Any]],
                  perspective_id: Optional[int] = None,
                  rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """
@@ -43,7 +43,7 @@ class RuleEvaluator:
         return cls._evaluate_simple_criteria(criteria, perspective_id, rule_expr)
 
     @classmethod
-    def _evaluate_and(cls, subcriteria: List[Dict], perspective_id: int,
+    def _evaluate_and(cls, subcriteria: List[Dict], perspective_id: Optional[int],
                       rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Combine multiple criteria with AND logic using vectorized horizontal operation."""
         if not subcriteria:
@@ -54,7 +54,7 @@ class RuleEvaluator:
         return pl.all_horizontal(exprs)
 
     @classmethod
-    def _evaluate_or(cls, subcriteria: List[Dict], perspective_id: int,
+    def _evaluate_or(cls, subcriteria: List[Dict], perspective_id: Optional[int],
                      rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Combine multiple criteria with OR logic using vectorized horizontal operation."""
         if not subcriteria:
@@ -65,7 +65,7 @@ class RuleEvaluator:
         return pl.any_horizontal(exprs)
 
     @classmethod
-    def _evaluate_simple_criteria(cls, criteria: Dict, perspective_id: int,
+    def _evaluate_simple_criteria(cls, criteria: Dict, perspective_id: Optional[int],
                                   rule_expr: Optional[pl.Expr] = None) -> pl.Expr:
         """Evaluate a simple column-operator-value criteria."""
         column = criteria.get("column", "").lower() if criteria.get("column") else None

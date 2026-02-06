@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "perspective-service"
 version = "0.1.0"
 description = "Polars-based perspective processing engine for financial position data"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "polars>=0.20.0",
     "arrow-odbc>=0.3.0",

@@ -217,7 +217,7 @@ class DatabaseLoader:
         if 'analytics_category_id' not in columns_lower:
             columns = ['analytics_category_id'] + list(columns)
         columns_str = ", ".join(columns)
-        ids_str = ",".join(map(str, valid_ids))
+        ids_str = ",".join(str(x) for x in valid_ids)
         return (
             f"SELECT {columns_str} FROM ASSET_ALLOCATION_ANALYTICS_CATEGORY_V WITH (NOLOCK) "
             f"WHERE analytics_category_id IN ({ids_str})"

@@ -98,8 +98,8 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
             modifier_names = perspective_map.get(str(perspective_id)) or []
             active_modifiers = processor._filter_overridden_modifiers(modifier_names)
 
-            keep_expr = processor._build_keep_expression(perspective_id, active_modifiers, {})
-            scale_expr = processor._build_scale_expression(perspective_id, {})
+            keep_expr = processor._build_keep_expression(perspective_id, active_modifiers)
+            scale_expr = processor._build_scale_expression(perspective_id)
 
             factor_expressions_pos.append(
                 pl.when(keep_expr).then(scale_expr).otherwise(pl.lit(None)).alias(column_name)
@@ -125,7 +125,7 @@ def profile_isolated(num_positions: int, num_lt_per_pos: int, num_perspectives: 
 
     positions_lf_rescaled, lookthroughs_lf_rescaled, sf_data = processor._apply_rescaling(
         positions_lf, lookthroughs_lf, perspective_configs, factor_map,
-        True, {}, weight_labels_map
+        True, weight_labels_map
     )
 
     t_rescaling = time.perf_counter() - t0

@@ -94,18 +94,22 @@ class ConfigurationManager:
 
         return perspectives, all_required_columns
 
-    def _load_hardcoded_modifiers(self):
+    def _load_hardcoded_modifiers(self) -> None:
         """Load modifiers from hardcoded SUPPORTED_MODIFIERS dict."""
         for name, mod_def in SUPPORTED_MODIFIERS.items():
-            op = (mod_def.get('rule_result_operator') or "").lower() or None
+            raw_op = mod_def.get('rule_result_operator')
+            op = str(raw_op).lower() if raw_op else None
+            criteria = mod_def.get('criteria')
+            required_columns = mod_def.get('required_columns', {})
+            override_modifiers = mod_def.get('override_modifiers', [])
             modifier = Modifier(
                 name=name,
-                apply_to=ApplyTo(mod_def.get('apply_to', 'both')),
-                modifier_type=ModifierType(mod_def.get('type', 'PreProcessing')),
-                criteria=mod_def.get('criteria'),
+                apply_to=ApplyTo(str(mod_def.get('apply_to', 'both'))),
+                modifier_type=ModifierType(str(mod_def.get('type', 'PreProcessing'))),
+                criteria=dict(criteria) if isinstance(criteria, dict) else None,
                 rule_result_operator=LogicalOperator(op) if op else None,
-                required_columns=mod_def.get('required_columns', {}),
-                override_modifiers=mod_def.get('override_modifiers', [])
+                required_columns={str(k): list(map(str, v)) for k, v in required_columns.items()} if isinstance(required_columns, dict) else {},  # type: ignore[union-attr]
+                override_modifiers=list(override_modifiers) if isinstance(override_modifiers, list) else []
             )
             self.modifiers[name] = modifier
 

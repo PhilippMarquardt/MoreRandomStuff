@@ -39,7 +39,7 @@ class PerspectiveProcessor:
 
     def build_perspective_plan(self,
                                positions_lf: pl.LazyFrame,
-                               lookthroughs_lf: pl.LazyFrame,
+                               lookthroughs_lf: Optional[pl.LazyFrame],
                                perspective_configs: Dict,
                                weight_labels_map: Dict[str, Tuple[List[str], List[str]]]) -> Tuple[pl.LazyFrame, Optional[pl.LazyFrame], Optional[pl.LazyFrame]]:
         """
@@ -96,11 +96,11 @@ class PerspectiveProcessor:
 
         # Apply factor expressions
         positions_lf = positions_lf.with_columns(factor_expressions_pos)
-        if has_lookthroughs:
+        if has_lookthroughs and lookthroughs_lf is not None:
             lookthroughs_lf = lookthroughs_lf.with_columns(factor_expressions_lt)
 
             # Synchronize lookthroughs with parent positions -> Remove children if parent dead
-            all_columns = [c for m in factor_map.values() for c in m.values()]
+            all_columns: List[str] = [c for m in factor_map.values() for c in m.values()]
             lookthroughs_lf = self._synchronize_lookthroughs(
                 lookthroughs_lf, positions_lf, all_columns
             )
@@ -141,7 +141,7 @@ class PerspectiveProcessor:
         expr = pl.lit(True)
         for modifier_name in modifier_names:
             modifier = self.config.modifiers.get(modifier_name)
-            if modifier and modifier.modifier_type == ModifierType.PRE_PROCESSING:
+            if modifier and modifier.modifier_type == ModifierType.PRE_PROCESSING and modifier.criteria:
                 applicable_expr = self._get_applicable_expr(modifier.apply_to)
                 criteria_expr = RuleEvaluator.evaluate(
                     modifier.criteria, perspective_id
@@ -156,7 +156,7 @@ class PerspectiveProcessor:
         # PostProcessing modifiers may have rule_result references that need rule_expr context
         for modifier_name in modifier_names:
             modifier = self.config.modifiers.get(modifier_name)
-            if modifier and modifier.modifier_type == ModifierType.POST_PROCESSING:
+            if modifier and modifier.modifier_type == ModifierType.POST_PROCESSING and modifier.criteria:
                 applicable_expr = self._get_applicable_expr(modifier.apply_to)
                 # Pass preproc_keep & rule_expr so rule_result can't see rows removed by preprocessing
                 # (Legacy physically removed these rows; we match that by including expr in the context)
@@ -226,23 +226,18 @@ class PerspectiveProcessor:
                                   lookthroughs_lf: pl.LazyFrame,
                                   positions_lf: pl.LazyFrame,
                                   factor_columns: List[str]) -> pl.LazyFrame:
-        """Synchronize lookthrough factors with parent position factors."""
-        # Get parent factors - aggregate by (instrument_id, sub_portfolio_id)
-        # Legacy behavior: if ANY parent with same (instrument_id, sub_portfolio_id) fails,
-        # the lookthrough should be removed. So we check if ANY factor is NULL.
-        parent_factors = positions_lf.group_by(["instrument_id", "sub_portfolio_id", "container"]).agg([
-            pl.when(pl.col(col).is_null().any())
-            .then(pl.lit(None))  # ANY parent failed → NULL (remove lookthrough)
-            .otherwise(pl.col(col).first())  # ALL parents passed → keep factor
-            .alias(col)
-            for col in factor_columns
-        ])
+        """Synchronize lookthrough factors with parent position factors.
 
-        # Rename columns for joining
-        rename_map = {col: f"parent_{col}" for col in factor_columns}
-        parent_factors = parent_factors.rename(rename_map)
+        TODO: (legacy matched on instrument_id + sub_portfolio_id only; Is this really wanted behaviour?
+        """
+        join_keys = ["instrument_id", "sub_portfolio_id", "container"]
 
-        # Join with lookthroughs (include container for correctness)
+        parent_factors = (
+            positions_lf
+            .select(join_keys + [pl.col(c).alias(f"__p_{c}") for c in factor_columns])
+            .unique(subset=join_keys)
+        )
+
         synchronized = lookthroughs_lf.join(
             parent_factors,
             left_on=["parent_instrument_id", "sub_portfolio_id", "container"],
@@ -250,18 +245,18 @@ class PerspectiveProcessor:
             how="left"
         )
 
-        # If parent removed, remove ALL children
+        # Null-out LT factors where parent was killed
         final_expressions = [
-            pl.when(pl.col(f"parent_{col}").is_null())
+            pl.when(pl.col(f"__p_{col}").is_null())
             .then(pl.lit(None))
             .otherwise(pl.col(col))
             .alias(col)
             for col in factor_columns
         ]
 
-        result = synchronized.with_columns(final_expressions)
-
-        return result
+        return synchronized.with_columns(final_expressions).drop(
+            [f"__p_{col}" for col in factor_columns]
+        )
 
     def _apply_rescaling(
         self,
@@ -402,7 +397,7 @@ class PerspectiveProcessor:
                         .otherwise(pl.col(fcol))
                     )
 
-                struct_exprs.append(pl.struct(**factor_fields).alias(f"{fcol}_factors"))
+                struct_exprs.append(pl.struct(**factor_fields).alias(f"{fcol}_factors"))  # type: ignore[no-matching-overload]
 
             positions_lf = positions_lf.with_columns(struct_exprs)
 
@@ -428,7 +423,7 @@ class PerspectiveProcessor:
             fcols_for_matching: List[str] = []
             match_exprs: List[pl.Expr] = []
 
-            if has_criteria:
+            if has_criteria and modifier is not None and modifier.criteria is not None:
                 for config_name, pmap in perspective_configs.items():
                     for pid in self._get_rescale_perspectives(pmap, "scale_lookthroughs_to_100_percent"):
                         fcol = factor_map[config_name][pid]
@@ -490,7 +485,7 @@ class PerspectiveProcessor:
                         .then(pl.col(fcol) / denom)
                         .otherwise(pl.col(fcol))
                     )
-                struct_exprs.append(pl.struct(**factor_fields).alias(f"{fcol}_factors"))
+                struct_exprs.append(pl.struct(**factor_fields).alias(f"{fcol}_factors"))  # type: ignore[no-matching-overload]
 
             lookthroughs_lf = lookthroughs_lf.with_columns(struct_exprs)
 
@@ -543,10 +538,10 @@ class PerspectiveProcessor:
         - HOLDING -> only applies to holding container
         - REFERENCE (or any other value) -> applies to non-holding containers
         """
-        apply_to = apply_to.lower()
-        if apply_to == ApplyTo.BOTH:
+        apply_to_lower = apply_to.lower()
+        if apply_to_lower == ApplyTo.BOTH:
             return pl.lit(True)
-        if apply_to == ApplyTo.HOLDING:
+        if apply_to_lower == ApplyTo.HOLDING:
             return pl.col("container") == Container.HOLDING
         # 'reference' or any other value = not holding
         return pl.col("container") != Container.HOLDING

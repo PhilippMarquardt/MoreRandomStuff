@@ -8,13 +8,12 @@ Usage:
     result = engine.process(input_json)
 """
 
-from perspective_service.config import DatabaseConfig, load_config
+from perspective_service.config import CONNECTION_STRING
 from perspective_service.core.engine import PerspectiveEngine
 
 __all__ = [
     'PerspectiveEngine',
-    'DatabaseConfig',
-    'load_config',
+    'CONNECTION_STRING',
 ]
 
 __version__ = "0.1.0"

@@ -151,7 +151,7 @@ SUPPORTED_MODIFIERS = {
         'required_columns': {'position_data': ['position_blocking_type_id']},
         'override_modifiers': []
     },
-    # This modifier needs PARENT_INSTRUMENT from DB
+
     'exclude_other_net_assets_excl_investment_grade_accrual': {
         'type': 'PreProcessing',
         'apply_to': 'both',
@@ -161,7 +161,7 @@ SUPPORTED_MODIFIERS = {
         ]},
         'required_columns': {
             'position_data': ['liquidity_type_id', 'parent_instrument_id'],
-            'parent_instrument': ['instrument_subtype_id']  # Will become parent_instrument_subtype_id
+            'parent_instrument': ['instrument_subtype_id']  
         },
         'override_modifiers': []
     },

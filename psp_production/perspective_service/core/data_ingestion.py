@@ -115,20 +115,20 @@ class DataIngestion:
         # Get unique instrument IDs
         pos_ids = positions_lf.select('instrument_id')
         lt_ids = (lookthroughs_lf.select('instrument_id')
-                  if lt_columns
+                  if lookthroughs_lf is not None and lt_columns
                   else pl.LazyFrame(schema={'instrument_id': pl.Int64}))
 
-        unique_ids = pl.concat([pos_ids, lt_ids]).unique().collect().to_series().to_list()
+        unique_ids = pl.concat([pos_ids, lt_ids]).unique().collect().to_series().to_list()  # type: ignore[possibly-missing-attribute]
 
         # Get unique parent_instrument_ids for PARENT_INSTRUMENT lookup (only if column exists)
         if 'parent_instrument_id' in pos_columns:
-            parent_ids = positions_lf.select('parent_instrument_id').unique().collect().to_series().to_list()
+            parent_ids = positions_lf.select('parent_instrument_id').unique().collect().to_series().to_list()  # type: ignore[possibly-missing-attribute]
         else:
             parent_ids = []
 
         # Get unique asset_allocation_ids for ASSET_ALLOCATION_ANALYTICS_CATEGORY_V lookup
         if 'asset_allocation_id' in pos_columns:
-            asset_allocation_ids = positions_lf.select('asset_allocation_id').unique().collect().to_series().to_list()
+            asset_allocation_ids = positions_lf.select('asset_allocation_id').unique().collect().to_series().to_list()  # type: ignore[possibly-missing-attribute]
         else:
             asset_allocation_ids = []
 
@@ -167,7 +167,7 @@ class DataIngestion:
                         right_on='parent_instrument_id',
                         how='left'
                     )
-                    if 'parent_instrument_id' in lt_columns:
+                    if lookthroughs_lf is not None and 'parent_instrument_id' in lt_columns:
                         lookthroughs_lf = lookthroughs_lf.join(
                             ref_lf,
                             left_on='parent_instrument_id',
@@ -183,7 +183,7 @@ class DataIngestion:
                         right_on='analytics_category_id',
                         how='left'
                     )
-                    if 'asset_allocation_id' in lt_columns:
+                    if lookthroughs_lf is not None and 'asset_allocation_id' in lt_columns:
                         lookthroughs_lf = lookthroughs_lf.join(
                             ref_lf,
                             left_on='asset_allocation_id',
@@ -193,7 +193,7 @@ class DataIngestion:
             else:
                 # Join on instrument_id (default for instrument, instrument_categorization, etc.)
                 positions_lf = positions_lf.join(ref_lf, on='instrument_id', how='left')
-                if lt_columns:
+                if lookthroughs_lf is not None and lt_columns:
                     lookthroughs_lf = lookthroughs_lf.join(ref_lf, on='instrument_id', how='left')
 
         return positions_lf, lookthroughs_lf
