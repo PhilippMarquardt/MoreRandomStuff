@@ -5,13 +5,21 @@ import logging
 import os
 from flask import Flask, request, jsonify
 from perspective_service.core.engine import PerspectiveEngine
-from perspective_service.config import CONNECTION_STRING, HOST, PORT
+from perspective_service.config import CONNECTION_STRING, HOST, PORT, OTEL_SERVICE_NAME, OTEL_COLLECTOR_ENDPOINT, OTEL_ENABLE_TRACING
+from perspective_service.telemetry import telemetry_init
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Initialize OpenTelemetry tracing (before Flask app creation)
+telemetry_init(OTEL_SERVICE_NAME, OTEL_COLLECTOR_ENDPOINT or None, OTEL_ENABLE_TRACING)
+
 app = Flask(__name__)
+
+# Auto-instrument Flask routes (creates root span per request, extracts traceparent)
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+FlaskInstrumentor().instrument_app(app)
 
 # Initialize engine at module load (before any requests)
 logger.info("Initializing PerspectiveEngine...")

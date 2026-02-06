@@ -9,6 +9,9 @@ from typing import Dict, List, Optional
 
 import polars as pl
 import pyodbc
+from opentelemetry import trace, context as otel_context
+
+tracer = trace.get_tracer(__name__)
 
 class DatabaseLoadError(Exception):
     """Raised when database loading fails."""
@@ -31,59 +34,66 @@ class DatabaseLoader:
             query: SQL query string
             use_pyodbc: If True, use pyodbc connection. If False (default), use arrow-odbc.
         """
-        if use_pyodbc:
-            # We can use polars interface as it takes pyodbc if provided an already open connection.
-            # CAUTION: This WILL lock GIL when querying much data
-            with pyodbc.connect(self._connection_string) as conn:
-                df = pl.read_database(query, conn)
-        else:
-            # arrow-odbc
-            df = pl.read_database(
-                query,
-                self._connection_string,
-                execute_options={"max_text_size": 999999}
-            )
-        # Normalize column names to lowercase
-        return df.rename({c: c.lower() for c in df.columns})
+        with tracer.start_as_current_span("db.query") as span:
+            span.set_attribute("db.system", "mssql")
+            span.set_attribute("db.statement", query[:500])
+            if use_pyodbc:
+                # We can use polars interface as it takes pyodbc if provided an already open connection.
+                # CAUTION: This WILL lock GIL when querying much data
+                with pyodbc.connect(self._connection_string) as conn:
+                    df = pl.read_database(query, conn)
+            else:
+                # arrow-odbc
+                df = pl.read_database(
+                    query,
+                    self._connection_string,
+                    execute_options={"max_text_size": 999999}
+                )
+            # Normalize column names to lowercase
+            df = df.rename({c: c.lower() for c in df.columns})
+            span.set_attribute("db.result_rows", len(df))
+            return df
 
     # ==================== PERSPECTIVES ====================
 
     def load_perspectives(self, system_version_timestamp: Optional[str] = None) -> Dict[int, Dict]:
         """Load perspectives from FN_GET_SUBSETTING_SERVICE_PERSPECTIVES."""
-        try:
-            sql_timestamp = 'null' if system_version_timestamp is None else repr(system_version_timestamp)
-            query = f"SELECT [dbo].[FN_GET_SUBSETTING_SERVICE_PERSPECTIVES]({sql_timestamp})"
-            df = self._execute_query(query, use_pyodbc=True)
+        with tracer.start_as_current_span("db.load_perspectives") as span:
+            try:
+                sql_timestamp = 'null' if system_version_timestamp is None else repr(system_version_timestamp)
+                query = f"SELECT [dbo].[FN_GET_SUBSETTING_SERVICE_PERSPECTIVES]({sql_timestamp})"
+                df = self._execute_query(query, use_pyodbc=True)
 
-            if df.is_empty():
-                raise DatabaseLoadError("No perspectives found in database")
+                if df.is_empty():
+                    raise DatabaseLoadError("No perspectives found in database")
 
-            json_str = df.item(0, 0)
-            json_data = json.loads(json_str)
-            raw_perspectives = json_data.get('perspectives', [])
+                json_str = df.item(0, 0)
+                json_data = json.loads(json_str)
+                raw_perspectives = json_data.get('perspectives', [])
 
-            # Group by perspective ID
-            grouped = {}
-            for p in raw_perspectives:
-                pid = p.get('id')
-                if pid not in grouped:
-                    grouped[pid] = {
-                        'id': pid,
-                        'name': p.get('name'),
-                        'is_active': p.get('is_active', True),
-                        'is_supported': p.get('is_compatible_with_sub_setting_service', True),
-                        'rules': []
-                    }
-                grouped[pid]['is_active'] &= p.get('is_active', True)
-                grouped[pid]['is_supported'] &= bool(p.get('is_compatible_with_sub_setting_service', True))
-                grouped[pid]['rules'].extend(p.get('rules', []))
+                # Group by perspective ID
+                grouped = {}
+                for p in raw_perspectives:
+                    pid = p.get('id')
+                    if pid not in grouped:
+                        grouped[pid] = {
+                            'id': pid,
+                            'name': p.get('name'),
+                            'is_active': p.get('is_active', True),
+                            'is_supported': p.get('is_compatible_with_sub_setting_service', True),
+                            'rules': []
+                        }
+                    grouped[pid]['is_active'] &= p.get('is_active', True)
+                    grouped[pid]['is_supported'] &= bool(p.get('is_compatible_with_sub_setting_service', True))
+                    grouped[pid]['rules'].extend(p.get('rules', []))
 
-            return grouped
+                span.set_attribute("num_perspectives", len(grouped))
+                return grouped
 
-        except json.JSONDecodeError as e:
-            raise DatabaseLoadError(f"Failed to parse perspective JSON: {e}")
-        except Exception as e:
-            raise DatabaseLoadError(f"Database error loading perspectives: {e}")
+            except json.JSONDecodeError as e:
+                raise DatabaseLoadError(f"Failed to parse perspective JSON: {e}")
+            except Exception as e:
+                raise DatabaseLoadError(f"Database error loading perspectives: {e}")
 
     # ==================== REFERENCE DATA ====================
 
@@ -95,50 +105,67 @@ class DatabaseLoader:
                             system_version_timestamp: Optional[str],
                             ed: Optional[str]) -> Dict[str, pl.DataFrame]:
         """Load reference data for specified tables in PARALLEL."""
-        # Build list of (table_name, query) tasks
-        tasks = []
-        for table_name, columns in tables_needed.items():
-            # We now call it position_data but it was once called instrumentinput. Since criteria were never updated we have to have it here
-            if table_name.lower() == 'position_data' or table_name.lower() == "instrumentinput":
-                continue
+        with tracer.start_as_current_span("db.load_reference_data") as span:
+            span.set_attribute("num_instrument_ids", len(instrument_ids))
 
-            query = self._build_reference_query(
-                table_name, columns, instrument_ids,
-                parent_instrument_ids, asset_allocation_ids,
-                system_version_timestamp, ed
-            )
-            if query:
-                tasks.append((table_name, query))
+            # Build list of (table_name, query) tasks
+            tasks = []
+            for table_name, columns in tables_needed.items():
+                # We now call it position_data but it was once called instrumentinput. Since criteria were never updated we have to have it here
+                if table_name.lower() == 'position_data' or table_name.lower() == "instrumentinput":
+                    continue
 
-        if not tasks:
-            return {}
+                query = self._build_reference_query(
+                    table_name, columns, instrument_ids,
+                    parent_instrument_ids, asset_allocation_ids,
+                    system_version_timestamp, ed
+                )
+                if query:
+                    tasks.append((table_name, query))
 
-        # Execute ALL queries in parallel (As long as arrow-odbc connection...)
-        results = {}
-        with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-            futures = {
-                executor.submit(self._execute_query, query): table_name
-                for table_name, query in tasks
-            }
-            for future in as_completed(futures):
-                table_name = futures[future]
+            if not tasks:
+                return {}
+
+            span.set_attribute("num_tables", len(tasks))
+
+            # Capture parent context for thread propagation
+            parent_ctx = otel_context.get_current()
+
+            def _run_query(table_name: str, query: str) -> pl.DataFrame:
+                token = otel_context.attach(parent_ctx)
                 try:
-                    # Normalize key to lowercase for consistent lookups
-                    results[table_name.lower()] = future.result()
-                except Exception as e:
-                    raise DatabaseLoadError(f"Failed to load {table_name}: {e}")
+                    with tracer.start_as_current_span(f"db.query.{table_name}") as q_span:
+                        q_span.set_attribute("db.table", table_name)
+                        return self._execute_query(query)
+                finally:
+                    otel_context.detach(token)
 
-        # Post-process parent_instrument
-        # This is needed as the instrument_id of loaded data is actually the data for positions parent_instrument_id
-        if 'parent_instrument' in results and not results['parent_instrument'].is_empty():
-            df = results['parent_instrument']
-            rename_map = {'instrument_id': 'parent_instrument_id'}
-            for c in df.columns:
-                if c != 'instrument_id':
-                    rename_map[c] = f'parent_{c}'
-            results['parent_instrument'] = df.rename(rename_map)
+            # Execute ALL queries in parallel (As long as arrow-odbc connection...)
+            results = {}
+            with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
+                futures = {
+                    executor.submit(_run_query, table_name, query): table_name
+                    for table_name, query in tasks
+                }
+                for future in as_completed(futures):
+                    table_name = futures[future]
+                    try:
+                        # Normalize key to lowercase for consistent lookups
+                        results[table_name.lower()] = future.result()
+                    except Exception as e:
+                        raise DatabaseLoadError(f"Failed to load {table_name}: {e}")
 
-        return results
+            # Post-process parent_instrument
+            # This is needed as the instrument_id of loaded data is actually the data for positions parent_instrument_id
+            if 'parent_instrument' in results and not results['parent_instrument'].is_empty():
+                df = results['parent_instrument']
+                rename_map = {'instrument_id': 'parent_instrument_id'}
+                for c in df.columns:
+                    if c != 'instrument_id':
+                        rename_map[c] = f'parent_{c}'
+                results['parent_instrument'] = df.rename(rename_map)
+
+            return results
 
     def _build_stored_proc_call(self, table_name: str, instrument_ids: List[int],
                                 columns: List[str], system_version_timestamp: Optional[str],

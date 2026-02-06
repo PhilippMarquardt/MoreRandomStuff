@@ -19,8 +19,10 @@ import time
 from typing import Dict, List, Optional, Any, Tuple
 
 import polars as pl
+from opentelemetry import trace
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 from perspective_service.core.configuration_manager import ConfigurationManager
 from perspective_service.core.data_ingestion import DataIngestion
@@ -67,36 +69,40 @@ class PerspectiveEngine:
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        logger.info("process() called (return_raw=%s)", return_raw_dataframes)
+        with tracer.start_as_current_span("process") as span:
+            logger.info("process() called (return_raw=%s)", return_raw_dataframes)
+            span.set_attribute("return_raw_dataframes", return_raw_dataframes)
 
-        perspective_configs = input_json.get('perspective_configurations', {})
-        weight_labels_map = DataIngestion.get_weight_labels(input_json)
-        logger.debug("Parsed %d containers from weight_labels_map", len(weight_labels_map))
+            perspective_configs = input_json.get('perspective_configurations', {})
+            weight_labels_map = DataIngestion.get_weight_labels(input_json)
+            span.set_attribute("num_containers", len(weight_labels_map))
+            logger.debug("Parsed %d containers from weight_labels_map", len(weight_labels_map))
 
-        # Build dataframes from JSON
-        positions_lf, lookthroughs_lf = DataIngestion.build_dataframes(
-            input_json,
-            weight_labels_map
-        )
+            # Build dataframes from JSON
+            with tracer.start_as_current_span("build_dataframes"):
+                positions_lf, lookthroughs_lf = DataIngestion.build_dataframes(
+                    input_json,
+                    weight_labels_map
+                )
 
-        if positions_lf.collect_schema().names() == []:
-            logger.info("Empty positions, returning early")
-            return {"perspective_configurations": {}}
+            if positions_lf.collect_schema().names() == []:
+                logger.info("Empty positions, returning early")
+                return {"perspective_configurations": {}}
 
-        logger.debug("Built dataframes: %d position cols, lookthroughs=%s",
-                      len(positions_lf.collect_schema().names()), lookthroughs_lf is not None)
-        logger.info("process() delegating to process_dataframes")
+            logger.debug("Built dataframes: %d position cols, lookthroughs=%s",
+                          len(positions_lf.collect_schema().names()), lookthroughs_lf is not None)
+            logger.info("process() delegating to process_dataframes")
 
-        return self.process_dataframes(
-            positions_lf=positions_lf,
-            weight_labels_map=weight_labels_map,
-            perspective_configs=perspective_configs,
-            lookthroughs_lf=lookthroughs_lf,
-            effective_date=input_json.get('ed'),
-            system_version_timestamp=input_json.get('system_version_timestamp'),
-            custom_perspective_rules=input_json.get('custom_perspective_rules'),
-            return_raw_dataframes=return_raw_dataframes
-        )
+            return self.process_dataframes(
+                positions_lf=positions_lf,
+                weight_labels_map=weight_labels_map,
+                perspective_configs=perspective_configs,
+                lookthroughs_lf=lookthroughs_lf,
+                effective_date=input_json.get('ed'),
+                system_version_timestamp=input_json.get('system_version_timestamp'),
+                custom_perspective_rules=input_json.get('custom_perspective_rules'),
+                return_raw_dataframes=return_raw_dataframes
+            )
 
     def get_requirements(self, input_json: Dict) -> Dict[str, List[str]]:
         """
@@ -149,55 +155,61 @@ class PerspectiveEngine:
         Returns:
             Formatted output dictionary, or raw DataFrames dict if return_raw_dataframes=True
         """
-        logger.info("process_dataframes() called with %d configs, return_raw=%s",
-                    len(perspective_configs), return_raw_dataframes)
+        with tracer.start_as_current_span("process_dataframes") as span:
+            logger.info("process_dataframes() called with %d configs, return_raw=%s",
+                        len(perspective_configs), return_raw_dataframes)
+            span.set_attribute("num_configs", len(perspective_configs))
+            span.set_attribute("return_raw_dataframes", return_raw_dataframes)
 
-        # Parse custom perspectives (thread-safe: returns dicts, doesn't store on self)
-        custom_perspectives: Dict[int, List[Rule]] = {}
-        custom_required_columns: Dict[int, Dict[str, List[str]]] = {}
-        if custom_perspective_rules:
-            custom_perspectives, custom_required_columns = self._parse_custom_rules(custom_perspective_rules)
-            logger.debug("Parsed %d custom perspectives", len(custom_perspectives))
+            # Parse custom perspectives (thread-safe: returns dicts, doesn't store on self)
+            custom_perspectives: Dict[int, List[Rule]] = {}
+            custom_required_columns: Dict[int, Dict[str, List[str]]] = {}
+            if custom_perspective_rules:
+                custom_perspectives, custom_required_columns = self._parse_custom_rules(custom_perspective_rules)
+                logger.debug("Parsed %d custom perspectives", len(custom_perspectives))
 
-        # Normalize provided DataFrames
-        all_pos, all_lt = DataIngestion.get_all_weights(weight_labels_map)
-        all_weights = list(set(all_pos + all_lt))
-        positions_lf, lookthroughs_lf = DataIngestion.normalize_dataframes(
-            positions_lf, lookthroughs_lf, all_weights
-        )
-
-        logger.debug("Normalized dataframes: %d pos cols, %d lt cols",
-                      len(positions_lf.collect_schema().names()),
-                      len(lookthroughs_lf.collect_schema().names()) if lookthroughs_lf is not None else 0)
-
-        if positions_lf.collect_schema().names() == []:
-            logger.info("Empty positions after normalization, returning early")
-            return {"perspective_configurations": {}}
-
-        # Join reference data if effective_date provided and DB connected
-        if effective_date and self.db_loader:
-            required_tables = self._determine_required_tables(perspective_configs, custom_required_columns)
-            if required_tables:
-                logger.info("Joining reference data from %d tables", len(required_tables))
-                positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
-                    positions_lf,
-                    lookthroughs_lf,
-                    required_tables,
-                    self.db_loader,
-                    system_version_timestamp,
-                    effective_date
+            # Normalize provided DataFrames
+            with tracer.start_as_current_span("normalize_dataframes"):
+                all_pos, all_lt = DataIngestion.get_all_weights(weight_labels_map)
+                all_weights = list(set(all_pos + all_lt))
+                positions_lf, lookthroughs_lf = DataIngestion.normalize_dataframes(
+                    positions_lf, lookthroughs_lf, all_weights
                 )
-        else:
-            logger.debug("Skipping reference data join (no effective_date or no db)")
 
-        if positions_lf.collect_schema().names() == []:
-            logger.info("Empty positions after reference join, returning early")
-            return {"perspective_configurations": {}}
+            logger.debug("Normalized dataframes: %d pos cols, %d lt cols",
+                          len(positions_lf.collect_schema().names()),
+                          len(lookthroughs_lf.collect_schema().names()) if lookthroughs_lf is not None else 0)
 
-        return self._process_core(
-            positions_lf, lookthroughs_lf, perspective_configs,
-            weight_labels_map, return_raw_dataframes, custom_perspectives
-        )
+            if positions_lf.collect_schema().names() == []:
+                logger.info("Empty positions after normalization, returning early")
+                return {"perspective_configurations": {}}
+
+            # Join reference data if effective_date provided and DB connected
+            if effective_date and self.db_loader:
+                required_tables = self._determine_required_tables(perspective_configs, custom_required_columns)
+                if required_tables:
+                    with tracer.start_as_current_span("join_reference_data") as ref_span:
+                        logger.info("Joining reference data from %d tables", len(required_tables))
+                        ref_span.set_attribute("num_tables", len(required_tables))
+                        positions_lf, lookthroughs_lf = DataIngestion.join_reference_data(
+                            positions_lf,
+                            lookthroughs_lf,
+                            required_tables,
+                            self.db_loader,
+                            system_version_timestamp,
+                            effective_date
+                        )
+            else:
+                logger.debug("Skipping reference data join (no effective_date or no db)")
+
+            if positions_lf.collect_schema().names() == []:
+                logger.info("Empty positions after reference join, returning early")
+                return {"perspective_configurations": {}}
+
+            return self._process_core(
+                positions_lf, lookthroughs_lf, perspective_configs,
+                weight_labels_map, return_raw_dataframes, custom_perspectives
+            )
 
     def _process_core(
         self,
@@ -214,18 +226,20 @@ class PerspectiveEngine:
         Called by both process() and process_dataframes() after data preparation.
         """
         # Build perspective plan (keep/scale expressions)
-        logger.info("Building perspective plan...")
-        t0 = time.perf_counter()
+        with tracer.start_as_current_span("build_perspective_plan") as span:
+            logger.info("Building perspective plan...")
+            span.set_attribute("num_configs", len(perspective_configs))
+            t0 = time.perf_counter()
 
-        processor = PerspectiveProcessor(self.config, custom_perspectives or {})
-        positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
-            positions_lf,
-            lookthroughs_lf,
-            perspective_configs,
-            weight_labels_map
-        )
+            processor = PerspectiveProcessor(self.config, custom_perspectives or {})
+            positions_lf, lookthroughs_lf, scale_factors_lf = processor.build_perspective_plan(
+                positions_lf,
+                lookthroughs_lf,
+                perspective_configs,
+                weight_labels_map
+            )
 
-        logger.debug("Perspective plan built in %.3fs", time.perf_counter() - t0)
+            logger.debug("Perspective plan built in %.3fs", time.perf_counter() - t0)
 
         # Return raw DataFrames if requested
         if return_raw_dataframes:
@@ -237,36 +251,39 @@ class PerspectiveEngine:
             }
 
         # Collect all
-        logger.info("Collecting and formatting output...")
-        t0 = time.perf_counter()
+        with tracer.start_as_current_span("collect_all") as span:
+            logger.info("Collecting and formatting output...")
+            t0 = time.perf_counter()
 
-        to_collect = [positions_lf]
-        has_lt = lookthroughs_lf is not None
-        has_sf = scale_factors_lf is not None
+            to_collect = [positions_lf]
+            has_lt = lookthroughs_lf is not None
+            has_sf = scale_factors_lf is not None
 
-        if has_lt:
-            to_collect.append(lookthroughs_lf)
-        if has_sf:
-            to_collect.append(scale_factors_lf)
+            if has_lt:
+                to_collect.append(lookthroughs_lf)
+            if has_sf:
+                to_collect.append(scale_factors_lf)
 
-        collected: list[pl.DataFrame] = pl.collect_all(to_collect)  # type: ignore[assignment]
+            span.set_attribute("num_dataframes", len(to_collect))
+            collected: list[pl.DataFrame] = pl.collect_all(to_collect)  # type: ignore[assignment]
 
-        positions_df: pl.DataFrame = collected[0]
-        lookthroughs_df: pl.DataFrame = collected[1] if has_lt else pl.DataFrame()
-        scale_factors_df: Optional[pl.DataFrame] = collected[-1] if has_sf else None
+            positions_df: pl.DataFrame = collected[0]
+            lookthroughs_df: pl.DataFrame = collected[1] if has_lt else pl.DataFrame()
+            scale_factors_df: Optional[pl.DataFrame] = collected[-1] if has_sf else None
 
-        logger.debug("Collected %d dataframes in %.3fs", len(to_collect), time.perf_counter() - t0)
+            logger.debug("Collected %d dataframes in %.3fs", len(to_collect), time.perf_counter() - t0)
 
         # Format output
-        t0 = time.perf_counter()
-        result = OutputFormatter.format_output(
-            positions_df,
-            lookthroughs_df,
-            perspective_configs,
-            weight_labels_map,
-            scale_factors_df
-        )
-        logger.debug("Output formatted in %.3fs", time.perf_counter() - t0)
+        with tracer.start_as_current_span("format_output"):
+            t0 = time.perf_counter()
+            result = OutputFormatter.format_output(
+                positions_df,
+                lookthroughs_df,
+                perspective_configs,
+                weight_labels_map,
+                scale_factors_df
+            )
+            logger.debug("Output formatted in %.3fs", time.perf_counter() - t0)
 
         return result
 

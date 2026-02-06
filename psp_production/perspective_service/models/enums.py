@@ -18,6 +18,7 @@ class RecordType(StrEnum):
     POSITIONS = "positions"
     ESSENTIAL_LOOKTHROUGHS = "essential_lookthroughs"
     COMPLETE_LOOKTHROUGHS = "complete_lookthroughs"
+    LOOKTHROUGHS = "lookthroughs"
 
 
 class ApplyTo(StrEnum):

@@ -14,7 +14,12 @@ load_dotenv(Path(__file__).parent.parent / "config.env")
 
 # Server constants
 HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = int(os.environ.get("PORT", "5000"))
+PORT = int(os.environ.get("PORT", "30078"))
+
+# OpenTelemetry constants
+OTEL_SERVICE_NAME = os.environ.get("OTEL_SERVICE_NAME", "perspective-service")
+OTEL_COLLECTOR_ENDPOINT = os.environ.get("OTEL_COLLECTOR_ENDPOINT", "")
+OTEL_ENABLE_TRACING = os.environ.get("OTEL_ENABLE_TRACING", "true").lower() == "true"
 
 # Database constants
 DB_SERVER = os.environ.get("DB_SERVER", "localhost")
